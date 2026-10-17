@@ -1,0 +1,148 @@
+
+spring:
+  application:
+    name: identifyr
+  # === DATASOURCE ===
+  datasource:
+    url: jdbc:postgresql://localhost:5433/join8_db
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres123}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 30000
+
+  # === JPA / HIBERNATE ===
+  jpa:
+    hibernate:
+      ddl-auto: validate  # Flyway controla el schema, Hibernate solo valida
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          batch_size: 20
+        order_inserts: true
+        order_updates: true
+    show-sql: false
+    open-in-view: false
+
+  # === FLYWAY ===
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
+    table: flyway_schema_history
+    validate-on-migrate: true
+
+  # === JACKSON ===
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: true
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: non_null
+    time-zone: America/Lima
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+
+# === LOGGING ===
+logging:
+  level:
+    root: INFO
+    com.join8: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+# === JWT ===
+jwt:
+  secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+  expiration: 86400000  # 24 horas en milisegundos
+  refresh-expiration: 604800000  # 7 días
+
+# === SCORE RULES (Capa 0, 1, 2) ===
+score:
+  rules:
+    # Capa 1 - Contexto
+    residential-stability-months:
+      min: 12
+      points: 10
+    economic-activity-tenure-months:
+      min: 6
+      points: 10
+    dependents:
+      max: 5
+      points: 5
+
+    # Capa 2 - Estabilidad Digital
+    phone-age-months:
+      min: 12
+      points: 8
+    email-age-months:
+      min: 12
+      points: 8
+    device-consistency:
+      min: 3  # número de inicios desde mismo dispositivo
+      points: 6
+
+    # Capa 0 - Antifraude (mínimos)
+    min-age: 18
+    min-phone-consistency: 3  # meses con mismo número
+
+  # Umbrales de score
+  thresholds:
+    excellent: 80
+    good: 60
+    fair: 40
+    poor: 20
+    very-poor: 0
+
+# === SERVER ===
+server:
+  port: 8080
+  servlet:
+    context-path: /api/v1
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
+    include-exception: false
+
+# === SPRING DOC / OPENAPI ===
+springdoc:
+  api-docs:
+    enabled: true
+    path: /api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+  show-actuator: false
+  packages-to-scan: com.join8.identify
+
+# === ACTUATOR ===
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# === CORS (para App Android) ===
+cors:
+  allowed-origins:
+    - "http://localhost:3000"
+    - "https://join8.com"
+  allowed-methods: "GET,POST,PUT,DELETE,OPTIONS"
+  allowed-headers: "*"
+  allow-credentials: true
+  max-age: 3600
