@@ -1,0 +1,12 @@
+.git
+.gradle
+.kotlin
+.idea
+.vscode
+build
+out
+bin
+*.iml
+*.md
+reader.txt
+deploy
