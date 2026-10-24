@@ -137,11 +137,11 @@ management:
     health:
       show-details: always
 
-# === CORS (para App Android) ===
+# === CORS (solo llamadas desde navegador; la app Android nativa no lo usa) ===
 cors:
   allowed-origins:
-    - "http://localhost:3000"
-    - "https://join8.com"
+    - "https://salvador-latam.com"
+    - "https://www.salvador-latam.com"
   allowed-methods: "GET,POST,PUT,DELETE,OPTIONS"
   allowed-headers: "*"
   allow-credentials: true

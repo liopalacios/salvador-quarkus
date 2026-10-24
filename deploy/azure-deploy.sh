@@ -8,6 +8,12 @@
 #   LOCAL_DOCKER=1 bash deploy/azure-deploy.sh   # compila con Docker local y hace push
 #
 # Re-ejecutable: cada corrida publica una imagen nueva y crea una revisión nueva.
+#
+# Dominio propio: https://api.salvador-latam.com (DNS en GoDaddy, certificado
+# administrado por Azure). El deploy no lo toca. En GoDaddy NO borrar:
+#   CNAME api        -> <fqdn de la Container App>
+#   TXT   asuid.api  -> customDomainVerificationId de la Container App
+# Sin el TXT, Azure no puede renovar el certificado.
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
