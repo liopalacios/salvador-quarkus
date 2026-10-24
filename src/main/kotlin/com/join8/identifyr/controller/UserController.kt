@@ -34,21 +34,4 @@ class UserController(private val userService: UserService) {
             )
         )
     }
-
-    @GetMapping("/dni/{dni}")
-    fun getUserByDni(@PathVariable dni: String): ResponseEntity<UserRegisterResponse> {
-        val user = userService.findByDni(dni)
-            ?: return ResponseEntity.notFound().build()
-
-        return ResponseEntity.ok(
-            UserRegisterResponse(
-                id = user.id!!,
-                phone = user.phone,
-                email = user.email,
-                address = user.address,
-                nationality = user.nationality,
-                isVerified = user.isVerified
-            )
-        )
-    }
 }

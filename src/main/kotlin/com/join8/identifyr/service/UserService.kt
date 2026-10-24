@@ -17,11 +17,11 @@ class UserService(
 
     @Transactional
     fun registerUser(request: UserRegisterRequest): UserRegisterResponse {
-        // Validar que DNI no esté registrado
-        require(!userRepository.existsByDni(request.dniFrontPhotoId)) {
+        // Validar que las fotos del documento no estén registradas
+        require(!userRepository.existsByPhotoFront(request.dniFrontPhotoId)) {
             "La id foto ${request.dniFrontPhotoId} ya está registrado"
         }
-        require(!userRepository.existsByEmail(request.dniBackPhotoId)) {
+        require(!userRepository.existsByPhotoBack(request.dniBackPhotoId)) {
             "La id foto reversa ${request.dniBackPhotoId} ya está registrado"
         }
         require(!userRepository.existsByPhone(request.phone)) {
@@ -56,7 +56,6 @@ class UserService(
             message = "Usuario registrado exitosamente."
         )
     }
-    fun findByDni(dni: String): User? = userRepository.findByDni(dni)
     fun findByEmail(email: String): User? = userRepository.findByEmail(email)
     fun existsById(id: java.util.UUID): Boolean = userRepository.existsById(id)
     fun findById(id: java.util.UUID): User? = userRepository.findById(id).orElse(null)
