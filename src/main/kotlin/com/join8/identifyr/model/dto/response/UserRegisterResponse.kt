@@ -4,8 +4,6 @@ import java.util.*
 
 data class UserRegisterResponse (
     val id: UUID,
-    val dni: String,
-    val fullName: String,
     val phone: String,
     val email: String,
     val address: String?,

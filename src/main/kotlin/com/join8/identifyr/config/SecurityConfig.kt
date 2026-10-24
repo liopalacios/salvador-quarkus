@@ -24,6 +24,7 @@ class SecurityConfig {
                         "/users/**",
                         "/context/**",
                         "/stability/**",
+                        "/scores/**",
                         "/actuator/health",
                         "/api-docs/**",
                         "/swagger-ui/**",

@@ -18,11 +18,11 @@ class UserService(
     @Transactional
     fun registerUser(request: UserRegisterRequest): UserRegisterResponse {
         // Validar que DNI no esté registrado
-        require(!userRepository.existsByDni(request.dni)) {
-            "El DNI ${request.dni} ya está registrado"
+        require(!userRepository.existsByDni(request.dniFrontPhotoId)) {
+            "La id foto ${request.dniFrontPhotoId} ya está registrado"
         }
-        require(!userRepository.existsByEmail(request.email)) {
-            "El email ${request.email} ya está registrado"
+        require(!userRepository.existsByEmail(request.dniBackPhotoId)) {
+            "La id foto reversa ${request.dniBackPhotoId} ya está registrado"
         }
         require(!userRepository.existsByPhone(request.phone)) {
             "El celular ${request.phone} ya está registrado"
@@ -30,13 +30,13 @@ class UserService(
 
         // Crear el usuario
         val user = User(
-            dni = request.dni,
-            fullName = request.fullName,
             phone = request.phone,
-            email = request.email,
-            address = request.address,
-            nationality = request.nationality,
-            passwordHash = passwordEncoder.encode(request.password),
+            email = "",
+            photoFront = request.dniFrontPhotoId,
+            photoBack = request.dniBackPhotoId,
+            address = null,
+            nationality = null,
+            passwordHash = "",
             isVerified = false,
             verificationToken = null,
             tokenExpiresAt = LocalDateTime.now().plusDays(1),
@@ -48,14 +48,12 @@ class UserService(
 
         return UserRegisterResponse(
             id = savedUser.id!!,
-            dni = savedUser.dni,
-            fullName = savedUser.fullName,
             phone = savedUser.phone,
             email = savedUser.email,
             address = savedUser.address,
             nationality = savedUser.nationality,
             isVerified = savedUser.isVerified,
-            message = "Usuario registrado exitosamente. Verifica tu email para activar la cuenta."
+            message = "Usuario registrado exitosamente."
         )
     }
     fun findByDni(dni: String): User? = userRepository.findByDni(dni)

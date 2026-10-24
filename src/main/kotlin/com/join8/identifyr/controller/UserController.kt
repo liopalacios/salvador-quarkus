@@ -26,8 +26,6 @@ class UserController(private val userService: UserService) {
         return ResponseEntity.ok(
             UserRegisterResponse(
                 id = user.id!!,
-                dni = user.dni,
-                fullName = user.fullName,
                 phone = user.phone,
                 email = user.email,
                 address = user.address,
@@ -45,8 +43,6 @@ class UserController(private val userService: UserService) {
         return ResponseEntity.ok(
             UserRegisterResponse(
                 id = user.id!!,
-                dni = user.dni,
-                fullName = user.fullName,
                 phone = user.phone,
                 email = user.email,
                 address = user.address,
