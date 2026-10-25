@@ -19,7 +19,7 @@ class ScoreServiceTest {
         val response = service.calculate(request("1a", "2d", "3d", "4a", "5a"))
         assertEquals(68, response.scoreValue)
         assertEquals("ORO", response.levelName)
-        assertEquals(450, response.maxLoanAmount) // 50 + 17/19*450 = 452.6 -> 450
+        assertEquals(450, response.maxLoanAmount)
     }
 
     @Test
@@ -38,20 +38,84 @@ class ScoreServiceTest {
         val response = service.calculate(request("1c", "2d", "3b", "4c", "5c"))
         assertEquals(44, response.scoreValue)
         assertEquals("PLATA", response.levelName)
-        assertEquals(250, response.maxLoanAmount) // 50 + 18/24*250 = 237.5 -> 250
+        assertEquals(300, response.maxLoanAmount)
         assertTrue("Tu actividad como comercio y ventas sumó puntos" in response.reasons)
         assertTrue("Llevas tiempo en lo mismo, eso genera confianza" in response.reasons)
         assertEquals("Completaste tu perfil sin dejar campos vacíos", response.reasons.last())
     }
 
     @Test
+    fun `caso real 1b 2d 3c 4a 5d da ORO con monto maximo 450`() {
+        // 80*.21 + 100*.14 + 70*.105 + 100*.105 + 15*.14 = 50.75 -> 51
+        val response = service.calculate(request("1b", "2d", "3c", "4a", "5d"))
+        assertEquals(51, response.scoreValue)
+        assertEquals("ORO", response.levelName)
+        assertEquals(450, response.maxLoanAmount)
+    }
+
+    @Test
     fun `limites de categoria y monto`() {
-        assertEquals("BRONCE" to 50, service.levelAndAmount(25))
-        assertEquals("PLATA" to 50, service.levelAndAmount(26))
-        assertEquals("PLATA" to 200, service.levelAndAmount(38)) // 175 -> 200
-        assertEquals("PLATA" to 300, service.levelAndAmount(50))
-        assertEquals("ORO" to 50, service.levelAndAmount(51))
-        assertEquals("ORO" to 500, service.levelAndAmount(70))
+        assertEquals(ScoreLevel.BRONZE, ScoreLevel.forScore(0))
+        assertEquals(ScoreLevel.BRONZE, ScoreLevel.forScore(25))
+        assertEquals(ScoreLevel.SILVER, ScoreLevel.forScore(26))
+        assertEquals(ScoreLevel.SILVER, ScoreLevel.forScore(50))
+        assertEquals(ScoreLevel.GOLD, ScoreLevel.forScore(51))
+        assertEquals(ScoreLevel.GOLD, ScoreLevel.forScore(100))
+    }
+
+    @Test
+    fun `redondeo en los cortes 25_5 y 50_5`() {
+        // Puntaje exacto en milésimas -> nivel tras redondear (mitades hacia arriba)
+        val cases = listOf(
+            25_499 to ScoreLevel.BRONZE,
+            25_500 to ScoreLevel.SILVER,
+            50_499 to ScoreLevel.SILVER,
+            50_500 to ScoreLevel.GOLD
+        )
+        cases.forEach { (thousandths, expected) ->
+            assertEquals(expected, ScoreLevel.forScore(service.roundScore(thousandths)), "$thousandths")
+        }
+    }
+
+    @Test
+    fun `monto maximo es fijo por nivel`() {
+        assertEquals(listOf(50, 300, 450), ScoreLevel.entries.map { it.maxLoanAmount })
+        assertEquals(listOf(50, 50, 50), ScoreLevel.entries.map { it.minLoanAmount })
+        (0..100).forEach { score ->
+            val level = ScoreLevel.forScore(score)
+            val expected = mapOf("BRONCE" to 50, "PLATA" to 300, "ORO" to 450).getValue(level.levelName)
+            assertEquals(expected, level.maxLoanAmount, "score $score")
+        }
+    }
+
+    @Test
+    fun `combinaciones reales mas cercanas a los cortes`() {
+        // Puntaje exacto -> redondeado; el nivel se decide sobre el redondeado (scoreValue)
+        val cases = listOf(
+            listOf("1e", "2b", "3b", "4d", "5d") to Triple(25, "BRONCE", 50),  // 25.48, el más alto bajo 25.5
+            listOf("1d", "2a", "3b", "4d", "5c") to Triple(26, "PLATA", 300),  // 25.55, el más bajo desde 25.5
+            listOf("1g", "2c", "3c", "4a", "5a") to Triple(50, "PLATA", 300),  // 50.47, el más alto bajo 50.5
+            listOf("1e", "2b", "3d", "4b", "5a") to Triple(51, "ORO", 450)     // 50.505, el más bajo desde 50.5
+        )
+        cases.forEach { (codes, expected) ->
+            val response = service.calculate(requestOf(codes))
+            assertEquals(expected, Triple(response.scoreValue, response.levelName, response.maxLoanAmount), "$codes")
+        }
+    }
+
+    @Test
+    fun `nivel y monto coinciden en todas las combinaciones posibles`() {
+        val all = expectedPoints.fold(listOf(emptyList<String>())) { acc, table ->
+            acc.flatMap { prefix -> table.keys.map { prefix + it } }
+        }
+        assertEquals(2048, all.size)
+        all.forEach { codes ->
+            val response = service.calculate(requestOf(codes))
+            val level = ScoreLevel.forScore(response.scoreValue)
+            assertEquals(expectedScore(codes), response.scoreValue, "$codes")
+            assertEquals(level.levelName, response.levelName, "$codes")
+            assertEquals(level.maxLoanAmount, response.maxLoanAmount, "$codes")
+        }
     }
 
     @Test

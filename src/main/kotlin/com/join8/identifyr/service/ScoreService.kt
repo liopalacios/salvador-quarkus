@@ -3,7 +3,25 @@ package com.join8.identifyr.service
 import com.join8.identifyr.model.dto.request.QuestionnaireRequest
 import com.join8.identifyr.model.dto.response.ScoreResponse
 import org.springframework.stereotype.Service
-import kotlin.math.roundToInt
+
+/**
+ * Única fuente de verdad nivel -> montos. levelName y maxLoanAmount salen siempre de la misma entrada.
+ * Los cortes se aplican sobre el puntaje redondeado (el mismo scoreValue que se devuelve):
+ * BRONCE <= 25 < PLATA <= 50 < ORO, es decir 25.5 ya es PLATA y 50.5 ya es ORO.
+ */
+enum class ScoreLevel(val levelName: String, val minLoanAmount: Int, val maxLoanAmount: Int) {
+    BRONZE("BRONCE", 50, 50),
+    SILVER("PLATA", 50, 300),
+    GOLD("ORO", 50, 450);
+
+    companion object {
+        fun forScore(score: Int): ScoreLevel = when {
+            score <= 25 -> BRONZE
+            score <= 50 -> SILVER
+            else -> GOLD
+        }
+    }
+}
 
 @Service
 class ScoreService {
@@ -49,10 +67,6 @@ class ScoreService {
         )
         private const val GENERIC_EMPLOYMENT_REASON = "Tu actividad económica sumó puntos"
         private const val COMPLETE_PROFILE_REASON = "Completaste tu perfil sin dejar campos vacíos"
-
-        const val LEVEL_BRONZE = "BRONCE"
-        const val LEVEL_SILVER = "PLATA"
-        const val LEVEL_GOLD = "ORO"
     }
 
     fun calculate(request: QuestionnaireRequest): ScoreResponse {
@@ -68,25 +82,19 @@ class ScoreService {
                 pointsFor(Q4_POINTS, q4, "housingType") * WEIGHT_Q4 +
                 pointsFor(Q5_POINTS, q5, "dependents") * WEIGHT_Q5
 
-        // Redondeo al entero más cercano (mitades hacia arriba)
-        val score = (weightedSum + 500) / 1000
-        val (level, amount) = levelAndAmount(score)
+        val score = roundScore(weightedSum)
+        val level = ScoreLevel.forScore(score)
 
         return ScoreResponse(
             scoreValue = score,
-            levelName = level,
-            maxLoanAmount = amount,
+            levelName = level.levelName,
+            maxLoanAmount = level.maxLoanAmount,
             reasons = buildReasons(listOf(q1, q2, q3, q4, q5))
         )
     }
 
-    internal fun levelAndAmount(score: Int): Pair<String, Int> = when {
-        score <= 25 -> LEVEL_BRONZE to 50
-        score <= 50 -> LEVEL_SILVER to roundToNearest50(50 + (score - 26) / 24.0 * 250).coerceAtMost(300)
-        else -> LEVEL_GOLD to roundToNearest50(50 + (score - 51) / 19.0 * 450).coerceAtMost(500)
-    }
-
-    private fun roundToNearest50(amount: Double): Int = (amount / 50).roundToInt() * 50
+    // Milésimas -> entero más cercano, mitades hacia arriba: 25.499 -> 25, 25.5 -> 26, 50.5 -> 51
+    internal fun roundScore(scoreThousandths: Int): Int = (scoreThousandths + 500) / 1000
 
     private fun buildReasons(codes: List<String>): List<String> {
         val reasons = mutableListOf<String>()
