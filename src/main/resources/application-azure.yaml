@@ -1,0 +1,34 @@
+# Perfil para Azure Container Apps (SPRING_PROFILES_ACTIVE=azure, lo define la infra).
+# La conexión a la BD llega por variables de entorno desde la Container App:
+#   SPRING_DATASOURCE_URL / SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD
+# y el secreto JWT por JWT_SECRET (Key Vault: jwt-secret).
+
+spring:
+  datasource:
+    hikari:
+      minimum-idle: 2
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+# Sin trazas SQL ni valores de parámetros en logs (son datos personales: DNI, email, teléfono)
+logging:
+  level:
+    root: INFO
+    com.join8: INFO
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    org.hibernate.orm.jdbc.bind: WARN
+
+# En Azure el secreto viene de Key Vault, sin valor por defecto en el código
+jwt:
+  secret: ${JWT_SECRET}
+
+server:
+  shutdown: graceful
+  # Detrás del ingress de Container Apps (TLS termina en el proxy)
+  forward-headers-strategy: framework
+
+management:
+  endpoint:
+    health:
+      show-details: never
