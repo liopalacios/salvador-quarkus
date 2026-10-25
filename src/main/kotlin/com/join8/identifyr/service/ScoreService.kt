@@ -16,13 +16,24 @@ class ScoreService {
         private const val WEIGHT_Q4 = 105
         private const val WEIGHT_Q5 = 140
 
+        // Q1 employmentType: ¿A qué te dedicas?
         private val Q1_POINTS = mapOf(
-            "1a" to 90, "1b" to 80, "1c" to 72, "1d" to 65,
-            "1e" to 58, "1f" to 50, "1g" to 42, "1h" to 35
+            "1a" to 90, // Bodega o negocio propio
+            "1b" to 80, // Servicios profesionales (estilista, costura, limpieza)
+            "1c" to 72, // Comercio y ventas
+            "1d" to 65, // Profesional independiente (cualquier actividad)
+            "1e" to 58, // Comida o gastronomía (menú, carretilla, mozo)
+            "1f" to 50, // Taxi colectivo
+            "1g" to 42, // Construcción
+            "1h" to 35  // Delivery y reparto
         )
+        // Q2 employmentTenure: 2a < 6 meses, 2b 6-12 meses, 2c 1-3 años, 2d > 3 años
         private val Q2_POINTS = mapOf("2a" to 0, "2b" to 35, "2c" to 70, "2d" to 100)
+        // Q3 residentialTenure: 3a < 6 meses, 3b 6-12 meses, 3c 1-3 años, 3d > 3 años
         private val Q3_POINTS = mapOf("3a" to 0, "3b" to 35, "3c" to 70, "3d" to 100)
+        // Q4 housingType: 4a Propia, 4b Alquilada, 4c Familiar, 4d Cedida
         private val Q4_POINTS = mapOf("4a" to 100, "4b" to 85, "4c" to 55, "4d" to 25)
+        // Q5 dependents: 5a 0, 5b 1, 5c 2, 5d 3 o más
         private val Q5_POINTS = mapOf("5a" to 100, "5b" to 70, "5c" to 40, "5d" to 15)
 
         private val REASONS = mapOf(
