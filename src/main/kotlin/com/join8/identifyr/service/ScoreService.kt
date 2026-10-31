@@ -2,6 +2,7 @@ package com.join8.identifyr.service
 
 import com.join8.identifyr.model.dto.request.QuestionnaireRequest
 import com.join8.identifyr.model.dto.response.ScoreResponse
+import com.join8.identifyr.model.entity.Questionnaire
 import org.springframework.stereotype.Service
 
 /**
@@ -20,6 +21,39 @@ enum class ScoreLevel(val levelName: String, val minLoanAmount: Int, val maxLoan
             score <= 50 -> SILVER
             else -> GOLD
         }
+    }
+}
+
+/**
+ * Bloque 2 ("Completar perfil"): cada campo suma una sola vez si tiene valor (no null y no vacío),
+ * sin importar su contenido. Los pesos (total 58) se escalan al 30%: cada punto vale 0.3,
+ * así que el bloque completo aporta 58 * 0.3 = 17.4 al score (máximo total 67.9 + 17.4 = 85.3).
+ */
+enum class ProfileField(val weight: Int, private val label: String, val valueOf: (Questionnaire) -> String?) {
+    EMAIL(5, "tu correo electrónico", Questionnaire::email),
+    ADDRESS(8, "tu dirección exacta", Questionnaire::address),
+    RUC(6, "tu RUC", Questionnaire::ruc),
+    DRIVER_LICENSE(6, "tu licencia de conducir", Questionnaire::driverLicense),
+    VEHICLE_PLATE(5, "la placa de tu vehículo", Questionnaire::vehiclePlate),
+    EDUCATION_LEVEL(4, "tu nivel de estudios", Questionnaire::educationLevel),
+    WORKPLACE(6, "tu lugar de trabajo", Questionnaire::workplace),
+    WORK_APPS(10, "tus apps de trabajo", Questionnaire::workApps),
+    ACCOUNT_STATEMENT(8, "tu estado de cuenta", Questionnaire::accountStatementPhotoId);
+
+    /** Aporte real al score, en milésimas: peso * 0.3 (5 -> 1500 = 1.5 puntos). */
+    val thousandths: Int get() = weight * BLOCK2_FACTOR_THOUSANDTHS
+
+    /**
+     * Motivo con el peso que muestra la pantalla "Completar perfil" de la app, ej. "Agregaste tu correo electrónico (+5)".
+     * Es el peso del formulario, no el aporte al score (que es peso * 0.3).
+     */
+    val reason: String get() = "Agregaste $label (+$weight)"
+
+    fun isFilled(q: Questionnaire): Boolean = !valueOf(q).isNullOrBlank()
+
+    companion object {
+        /** El bloque 2 pesa 30%: cada punto de peso vale 0.3 (300 milésimas). */
+        const val BLOCK2_FACTOR_THOUSANDTHS = 300
     }
 }
 
@@ -67,14 +101,74 @@ class ScoreService {
         )
         private const val GENERIC_EMPLOYMENT_REASON = "Tu actividad económica sumó puntos"
         private const val COMPLETE_PROFILE_REASON = "Completaste tu perfil sin dejar campos vacíos"
+
+        private val TABLES = mapOf(
+            "employmentType" to Q1_POINTS,
+            "employmentTenure" to Q2_POINTS,
+            "residentialTenure" to Q3_POINTS,
+            "housingType" to Q4_POINTS,
+            "dependents" to Q5_POINTS
+        )
     }
 
     fun calculate(request: QuestionnaireRequest): ScoreResponse {
-        val q1 = request.employmentType.normalized()
-        val q2 = request.employmentTenure.normalized()
-        val q3 = request.residentialTenure.normalized()
-        val q4 = request.housingType.normalized()
-        val q5 = request.dependents.normalized()
+        val base = calculateBase(
+            request.employmentType, request.employmentTenure, request.residentialTenure,
+            request.housingType, request.dependents
+        )
+        return toResponse(base.thousandths, base.reasons)
+    }
+
+    /**
+     * Score de un registro de cuestionario: bloque 1 (ponderado) + bloque 2 (pesos * 0.3).
+     * Se suman los valores exactos y se redondea una sola vez; nivel y monto salen del score final.
+     */
+    fun calculate(questionnaire: Questionnaire): ScoreResponse {
+        fun required(value: String?, field: String) =
+            value ?: throw IllegalStateException("El cuestionario ${questionnaire.id} no tiene la respuesta $field")
+
+        val base = calculateBase(
+            required(questionnaire.employmentType, "employmentType"),
+            required(questionnaire.employmentTenure, "employmentTenure"),
+            required(questionnaire.residentialTenure, "residentialTenure"),
+            required(questionnaire.housingType, "housingType"),
+            required(questionnaire.dependents, "dependents")
+        )
+        val filled = ProfileField.entries.filter { it.isFilled(questionnaire) }
+        return toResponse(
+            base.thousandths + filled.sumOf { it.thousandths },
+            base.reasons + filled.map { it.reason }
+        )
+    }
+
+    private fun toResponse(scoreThousandths: Int, reasons: List<String>): ScoreResponse {
+        val score = roundScore(scoreThousandths)
+        val level = ScoreLevel.forScore(score)
+        return ScoreResponse(
+            scoreValue = score,
+            levelName = level.levelName,
+            maxLoanAmount = level.maxLoanAmount,
+            reasons = reasons
+        )
+    }
+
+    private class BaseScore(val thousandths: Int, val reasons: List<String>)
+
+    /** Normaliza un código del bloque 1 y verifica que sea válido para su campo; lanza IllegalArgumentException si no. */
+    fun normalizeCode(field: String, code: String): String {
+        val table = TABLES[field] ?: throw IllegalArgumentException("Campo desconocido: $field")
+        return code.normalized().also { pointsFor(table, it, field) }
+    }
+
+    private fun calculateBase(
+        employmentType: String, employmentTenure: String, residentialTenure: String,
+        housingType: String, dependents: String
+    ): BaseScore {
+        val q1 = employmentType.normalized()
+        val q2 = employmentTenure.normalized()
+        val q3 = residentialTenure.normalized()
+        val q4 = housingType.normalized()
+        val q5 = dependents.normalized()
 
         val weightedSum = pointsFor(Q1_POINTS, q1, "employmentType") * WEIGHT_Q1 +
                 pointsFor(Q2_POINTS, q2, "employmentTenure") * WEIGHT_Q2 +
@@ -82,15 +176,7 @@ class ScoreService {
                 pointsFor(Q4_POINTS, q4, "housingType") * WEIGHT_Q4 +
                 pointsFor(Q5_POINTS, q5, "dependents") * WEIGHT_Q5
 
-        val score = roundScore(weightedSum)
-        val level = ScoreLevel.forScore(score)
-
-        return ScoreResponse(
-            scoreValue = score,
-            levelName = level.levelName,
-            maxLoanAmount = level.maxLoanAmount,
-            reasons = buildReasons(listOf(q1, q2, q3, q4, q5))
-        )
+        return BaseScore(weightedSum, buildReasons(listOf(q1, q2, q3, q4, q5)))
     }
 
     // Milésimas -> entero más cercano, mitades hacia arriba: 25.499 -> 25, 25.5 -> 26, 50.5 -> 51
