@@ -1,6 +1,8 @@
 package com.join8.identifyr.model.entity
 
 import jakarta.persistence.*
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.*
@@ -49,6 +51,8 @@ class Questionnaire(
     @Column(name = "account_statement_photo_id", length = 255, updatable = false)
     val accountStatementPhotoId: String? = null,
 
+    // CHAR(1) en la BD (V3); sin JdbcTypeCode Hibernate espera VARCHAR y la validación falla
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "estado", length = 1, nullable = false, columnDefinition = "CHAR(1)")
     var estado: String = ACTIVE,
 
