@@ -66,6 +66,21 @@ jwt:
   expiration: 86400000  # 24 horas en milisegundos
   refresh-expiration: 604800000  # 7 días
 
+# === SUPERVISOR ===
+# TEMPORAL: la app aún no tiene login de supervisor, así que GET /loan-requests se entrega sin token.
+# Si llega un token, se valida y debe traer el rol SUPERVISOR. Pasar a false cuando exista el login.
+security:
+  supervisor:
+    allow-anonymous: true
+
+# === PRÉSTAMOS ===
+# interés = floor(monto * interest-rate); fechas = día de registro (en zone) + N días
+loan:
+  interest-rate: 0.18
+  payment-term-days: 7
+  app-payment-term-days: 61   # plazo que muestra la app (requisito de Google Play)
+  zone: America/Lima
+
 # === SCORE RULES (Capa 0, 1, 2) ===
 score:
   rules:

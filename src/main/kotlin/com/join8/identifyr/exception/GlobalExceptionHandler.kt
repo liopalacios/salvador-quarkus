@@ -45,6 +45,33 @@ class GlobalExceptionHandler {
             ))
     }
 
+    @ExceptionHandler(BusinessException::class)
+    fun handleBusiness(ex: BusinessException): ResponseEntity<ErrorResponse> {
+        return ResponseEntity
+            .status(HttpStatus.UNPROCESSABLE_ENTITY)
+            .body(ErrorResponse(
+                timestamp = LocalDateTime.now(),
+                status = HttpStatus.UNPROCESSABLE_ENTITY.value(),
+                error = "Unprocessable Entity",
+                message = ex.message ?: "Regla de negocio incumplida",
+                path = null
+            ))
+    }
+
+    @ExceptionHandler(ConflictException::class)
+    fun handleConflict(ex: ConflictException): ResponseEntity<ErrorResponse> {
+        return ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .body(ErrorResponse(
+                timestamp = LocalDateTime.now(),
+                status = HttpStatus.CONFLICT.value(),
+                error = "Conflict",
+                message = ex.message ?: "Conflicto",
+                path = null,
+                idPrestamo = ex.idPrestamo
+            ))
+    }
+
     @ExceptionHandler(IllegalStateException::class)
     fun handleIllegalState(ex: IllegalStateException): ResponseEntity<ErrorResponse> {
         return ResponseEntity
@@ -148,5 +175,7 @@ data class ErrorResponse(
     val status: Int,
     val error: String,
     val message: String,
-    val path: String?
+    val path: String?,
+    /** Solo en el 409 de préstamo ya registrado; null se omite del JSON (default-property-inclusion: non_null). */
+    val idPrestamo: java.util.UUID? = null
 )
