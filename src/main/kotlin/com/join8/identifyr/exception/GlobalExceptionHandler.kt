@@ -2,6 +2,7 @@ package com.join8.identifyr.exception
 
 import com.fasterxml.jackson.databind.exc.MismatchedInputException
 import org.slf4j.LoggerFactory
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.http.converter.HttpMessageNotReadableException
@@ -69,6 +70,20 @@ class GlobalExceptionHandler {
                 message = ex.message ?: "Conflicto",
                 path = null,
                 idPrestamo = ex.idPrestamo
+            ))
+    }
+
+    @ExceptionHandler(RateLimitExceededException::class)
+    fun handleRateLimit(ex: RateLimitExceededException): ResponseEntity<ErrorResponse> {
+        return ResponseEntity
+            .status(HttpStatus.TOO_MANY_REQUESTS)
+            .header(HttpHeaders.RETRY_AFTER, ex.retryAfterSeconds.toString())
+            .body(ErrorResponse(
+                timestamp = LocalDateTime.now(),
+                status = HttpStatus.TOO_MANY_REQUESTS.value(),
+                error = "Too Many Requests",
+                message = "Demasiadas solicitudes, intenta nuevamente más tarde",
+                path = null
             ))
     }
 

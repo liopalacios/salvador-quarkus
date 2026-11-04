@@ -26,6 +26,9 @@ WORKDIR /app
 ARG APPI_AGENT_VERSION=3.6.2
 ADD https://github.com/microsoft/ApplicationInsights-Java/releases/download/${APPI_AGENT_VERSION}/applicationinsights-agent-${APPI_AGENT_VERSION}.jar /app/applicationinsights-agent.jar
 
+# El agente lee esta configuración de la carpeta de su jar: enmascara el celular de las URLs
+COPY deploy/applicationinsights.json /app/applicationinsights.json
+
 COPY --from=build /app.jar /app/app.jar
 
 RUN useradd --system --uid 10001 spring \

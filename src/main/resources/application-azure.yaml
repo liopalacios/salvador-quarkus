@@ -25,8 +25,10 @@ jwt:
 
 server:
   shutdown: graceful
-  # Detrás del ingress de Container Apps (TLS termina en el proxy)
-  forward-headers-strategy: framework
+  # Detrás del ingress de Container Apps (TLS termina en el proxy).
+  # native (no framework): Tomcat toma la última IP no interna de X-Forwarded-For, la que agrega el ingress.
+  # framework toma la primera, que la envía el cliente, y permitiría evadir el rate limiting por IP.
+  forward-headers-strategy: native
 
 management:
   endpoint:

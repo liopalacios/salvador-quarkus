@@ -1,0 +1,17 @@
+{
+  "preview": {
+    "processors": [
+      {
+        "type": "attribute",
+        "actions": [
+          {
+            "key": "url.path",
+            "action": "mask",
+            "pattern": "(?<route>/users/phone/)[^/]+",
+            "replace": "${route}***"
+          }
+        ]
+      }
+    ]
+  }
+}

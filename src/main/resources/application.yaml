@@ -73,6 +73,16 @@ security:
   supervisor:
     allow-anonymous: true
 
+# === RATE LIMITING ===
+# Por IP y por réplica, con un contador por ruta. Holgado porque muchos usuarios móviles comparten IP pública (CGNAT).
+rate-limit:
+  phone-lookup:
+    max-requests: 30
+    window-seconds: 60
+  user-register:
+    max-requests: 10
+    window-seconds: 60
+
 # === PRÉSTAMOS ===
 # interés = floor(monto * interest-rate); fechas = día de registro (en zone) + N días
 loan:
