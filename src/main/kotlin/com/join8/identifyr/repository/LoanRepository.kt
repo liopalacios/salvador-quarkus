@@ -1,6 +1,7 @@
 package com.join8.identifyr.repository
 
 import com.join8.identifyr.model.entity.Loan
+import com.join8.identifyr.model.entity.LoanStatus
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
 import java.util.*
@@ -9,4 +10,5 @@ import java.util.*
 interface LoanRepository : JpaRepository<Loan, UUID> {
     fun findByLoanRequestId(loanRequestId: UUID): Loan?
     fun existsByOperationCode(operationCode: String): Boolean
+    fun findFirstByPhoneAndStatusOrderByCreatedAtDesc(phone: String, status: LoanStatus): Loan?
 }

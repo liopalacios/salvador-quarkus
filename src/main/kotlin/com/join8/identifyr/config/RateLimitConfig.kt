@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 @ConfigurationProperties(prefix = "rate-limit")
 data class RateLimitProperties(
     val phoneLookup: Limit = Limit(maxRequests = 30),
+    val loanLookup: Limit = Limit(maxRequests = 30),
     val userRegister: Limit = Limit(maxRequests = 10)
 ) {
     data class Limit(
@@ -90,6 +91,8 @@ class RateLimitConfig(
     override fun addInterceptors(registry: InterceptorRegistry) {
         registry.addInterceptor(IpRateLimitInterceptor("phone-lookup", IpRateLimiter(props.phoneLookup, clock)))
             .addPathPatterns("/users/phone/*")
+        registry.addInterceptor(IpRateLimitInterceptor("loan-lookup", IpRateLimiter(props.loanLookup, clock), "GET"))
+            .addPathPatterns("/loans/current/phone/*")
         registry.addInterceptor(IpRateLimitInterceptor("user-register", IpRateLimiter(props.userRegister, clock), "POST"))
             .addPathPatterns("/users/register")
     }

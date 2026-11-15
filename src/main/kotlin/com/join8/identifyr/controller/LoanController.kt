@@ -1,6 +1,7 @@
 package com.join8.identifyr.controller
 
 import com.join8.identifyr.model.dto.request.LoanRegisterRequest
+import com.join8.identifyr.model.dto.response.CurrentLoanResponse
 import com.join8.identifyr.model.dto.response.LoanRegisterResponse
 import com.join8.identifyr.service.LoanService
 import jakarta.validation.Valid
@@ -17,7 +18,7 @@ class LoanController(
     private val loanService: LoanService
 ) {
 
-    // Solo supervisor (ver SecurityConfig). 422 (no 404) si la solicitud no existe.
+    // Solo supervisor (ver SecurityConfig). 201 / 400 / 404 / 409 / 422 (ver LoanService.register).
     // created_by = "sub" del token; null mientras se permita el acceso sin token.
     @PostMapping("/register")
     fun register(
@@ -25,4 +26,9 @@ class LoanController(
         @AuthenticationPrincipal jwt: Jwt?
     ): ResponseEntity<LoanRegisterResponse> =
         ResponseEntity.status(HttpStatus.CREATED).body(loanService.register(request, jwt?.subject))
+
+    // App del cliente, sin token y con rate limit por IP (ver RateLimitConfig)
+    @GetMapping("/current/phone/{phone}")
+    fun current(@PathVariable phone: String): ResponseEntity<CurrentLoanResponse> =
+        ResponseEntity.ok(loanService.current(phone))
 }

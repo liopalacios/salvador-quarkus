@@ -13,7 +13,7 @@ enum class LoanRequestStatus { PENDIENTE, PROCESADA, RECHAZADA }
 
 /**
  * Solicitud de préstamo. Los datos del solicitante son inmutables (updatable = false):
- * al procesarla o rechazarla solo cambian [status], [operationCode] y [updatedAt].
+ * al procesarla o rechazarla solo cambian [status], [operationCode], [processedAt] y [updatedAt].
  */
 @Entity
 @Table(name = "loan_request")
@@ -43,12 +43,19 @@ class LoanRequest(
     @Column(name = "requested_amount", nullable = false, updatable = false)
     val requestedAmount: Int,
 
+    /** Días entre cuotas (15 o 30, ver LoanPlan). Null en solicitudes anteriores a V7: no se pueden procesar. */
+    @Column(name = "installment_frequency", updatable = false)
+    val installmentFrequency: Int? = null,
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 10, nullable = false)
     var status: LoanRequestStatus = LoanRequestStatus.PENDIENTE,
 
     @Column(name = "operation_code", length = 50)
     var operationCode: String? = null,
+
+    @Column(name = "processed_at")
+    var processedAt: Instant? = null,
 
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: Instant = now(),

@@ -3,7 +3,6 @@ package com.join8.identifyr.service
 import com.join8.identifyr.exception.BusinessException
 import com.join8.identifyr.model.dto.request.LoanRequestRegisterRequest
 import com.join8.identifyr.model.dto.response.LoanRequestItemResponse
-import com.join8.identifyr.model.dto.response.LoanRequestListResponse
 import com.join8.identifyr.model.dto.response.LoanRequestRegisterResponse
 import com.join8.identifyr.model.entity.DepositType
 import com.join8.identifyr.model.entity.LoanCategory
@@ -11,8 +10,6 @@ import com.join8.identifyr.model.entity.LoanRequest
 import com.join8.identifyr.model.entity.LoanRequestStatus
 import com.join8.identifyr.repository.LoanRequestRepository
 import com.join8.identifyr.repository.UserRepository
-import org.springframework.data.domain.PageRequest
-import org.springframework.data.domain.Sort
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.util.*
@@ -33,6 +30,10 @@ class LoanRequestService(
         val userId = UUID.fromString(request.idUsuario!!)
         val category = LoanCategory.valueOf(request.categoria!!)
         val amount = request.montoSolicitado!!
+        val frequency = request.frecuenciaCuota
+        require(frequency == null || LoanPlan.forFrequency(frequency) != null) {
+            "frecuenciaCuota: solo se permite ${LoanPlan.allowedFrequencies.joinToString(" o ")}"
+        }
 
         // Tope según el nivel de score enviado (misma tabla que usa GET /scores/{userId})
         val maxAmount = ScoreLevel.entries.single { it.levelName == category.name }.maxLoanAmount
@@ -55,62 +56,47 @@ class LoanRequestService(
                 depositType = DepositType.valueOf(request.tipoDeposito!!),
                 category = category,
                 score = request.puntaje!!,
-                requestedAmount = amount
+                requestedAmount = amount,
+                installmentFrequency = frequency
             )
         )
         return LoanRequestRegisterResponse(id = saved.id!!, status = saved.status.name, createdAt = saved.createdAt)
     }
 
     /**
-     * Listado del supervisor. PENDIENTE: más antigua primero (created_at asc), para atender primero
-     * la que más espera. PROCESADA / RECHAZADA: más reciente primero (updated_at desc).
-     * El id desempata para que la paginación sea estable.
+     * Listado del supervisor: solo las solicitudes del estado pedido, filtradas en SQL.
+     * PENDIENTE: más antigua primero (orden de llegada). PROCESADA: última procesada primero (processed_at).
+     * RECHAZADA: más reciente primero (updated_at; no hay fecha de rechazo). Sin resultados -> lista vacía.
      */
     @Transactional(readOnly = true)
-    fun list(estado: String?, page: Int, size: Int): LoanRequestListResponse {
-        val status = parseStatus(estado)
-        require(page >= 0) { "page debe ser mayor o igual a 0" }
-        require(size in 1..MAX_PAGE_SIZE) { "size debe estar entre 1 y $MAX_PAGE_SIZE" }
-
-        val sort = when (status) {
-            LoanRequestStatus.PENDIENTE -> Sort.by(Sort.Order.asc("createdAt"), Sort.Order.asc("id"))
-            else -> Sort.by(Sort.Order.desc("updatedAt"), Sort.Order.asc("id"))
+    fun list(estado: String?): List<LoanRequestItemResponse> {
+        val rows = when (val status = parseStatus(estado)) {
+            LoanRequestStatus.PENDIENTE -> loanRequestRepository.findAllByStatusOrderByCreatedAtAscIdAsc(status)
+            LoanRequestStatus.PROCESADA -> loanRequestRepository.findAllByStatusOrderByProcessedAtDescIdAsc(status)
+            LoanRequestStatus.RECHAZADA -> loanRequestRepository.findAllByStatusOrderByUpdatedAtDescIdAsc(status)
         }
-        val result = loanRequestRepository.findAllByStatus(status, PageRequest.of(page, size, sort))
-
-        val counts = loanRequestRepository.countGroupByStatus().associate { it.status to it.total }
-        return LoanRequestListResponse(
-            items = result.content.map { it.toItem() },
-            page = page,
-            size = size,
-            totalItems = result.totalElements,
-            totalPages = result.totalPages,
-            conteos = LoanRequestStatus.entries.associate { it.name to (counts[it] ?: 0L) }
-        )
+        return rows.map { it.toItem() }
     }
 
+    /** Sin distinguir mayúsculas y con trim: " pendiente " -> PENDIENTE. Faltante u otro valor -> 400. */
     private fun parseStatus(raw: String?): LoanRequestStatus {
-        val allowed = LoanRequestStatus.entries.joinToString(", ")
-        require(!raw.isNullOrBlank()) { "El parámetro estado es obligatorio. Valores permitidos: $allowed" }
-        return LoanRequestStatus.entries.firstOrNull { it.name == raw }
-            ?: throw IllegalArgumentException("estado inválido '$raw'. Valores permitidos: $allowed")
+        val normalized = raw?.trim()?.uppercase(Locale.ROOT)
+        return LoanRequestStatus.entries.firstOrNull { it.name == normalized }
+            ?: throw IllegalArgumentException(INVALID_STATUS_MESSAGE)
     }
 
     private fun LoanRequest.toItem() = LoanRequestItemResponse(
-        id = id!!,
-        idUsuario = userId,
+        idSolicitud = id!!,
         numCelular = phone,
         montoSolicitado = requestedAmount,
         puntaje = score,
         categoria = category.name,
-        tipoDeposito = depositType.name,
         estado = status.name,
-        codigoOperacion = operationCode,
-        fechaRegistro = createdAt,
-        fechaActualizacion = updatedAt
+        codigoOperacion = if (status == LoanRequestStatus.PROCESADA) operationCode else null,
+        carteraDigital = depositType.name
     )
 
     companion object {
-        const val MAX_PAGE_SIZE = 100
+        const val INVALID_STATUS_MESSAGE = "estado debe ser PENDIENTE, PROCESADA o RECHAZADA"
     }
 }

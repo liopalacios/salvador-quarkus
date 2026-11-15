@@ -3,61 +3,45 @@ package com.join8.identifyr.service
 import com.join8.identifyr.config.LoanProperties
 import com.join8.identifyr.exception.BusinessException
 import com.join8.identifyr.exception.ConflictException
+import com.join8.identifyr.exception.ResourceNotFoundException
 import com.join8.identifyr.model.dto.request.LoanRegisterRequest
+import com.join8.identifyr.model.dto.response.CurrentLoanResponse
+import com.join8.identifyr.model.dto.response.CurrentLoanType
+import com.join8.identifyr.model.dto.response.LoanInstallmentResponse
 import com.join8.identifyr.model.dto.response.LoanRegisterResponse
-import com.join8.identifyr.model.entity.Loan
-import com.join8.identifyr.model.entity.LoanRequest
-import com.join8.identifyr.model.entity.LoanRequestStatus
+import com.join8.identifyr.model.entity.*
+import com.join8.identifyr.repository.LoanInstallmentRepository
 import com.join8.identifyr.repository.LoanRepository
 import com.join8.identifyr.repository.LoanRequestRepository
+import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import java.math.RoundingMode
 import java.time.Clock
 import java.time.Instant
-import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 import java.util.*
-
-/** Condiciones calculadas en el servidor para un monto y un día de registro. */
-data class LoanTerms(
-    val interest: Int,
-    val totalAmount: Int,
-    val paymentDate: LocalDate,
-    val appPaymentDate: LocalDate
-)
 
 @Service
 class LoanService(
     private val loanRepository: LoanRepository,
+    private val loanInstallmentRepository: LoanInstallmentRepository,
     private val loanRequestRepository: LoanRequestRepository,
     private val props: LoanProperties,
     private val clock: Clock
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
 
     companion object {
         const val MAX_OPERATION_CODE_LENGTH = 50
-    }
-
-    /** interés = floor(monto * tasa); fechas = día de registro + plazos configurados. */
-    fun terms(amount: Int, registrationDay: LocalDate): LoanTerms {
-        val interest = amount.toBigDecimal().multiply(props.interestRate).setScale(0, RoundingMode.FLOOR).intValueExact()
-        return LoanTerms(
-            interest = interest,
-            totalAmount = amount + interest,
-            paymentDate = registrationDay.plusDays(props.paymentTermDays),
-            appPaymentDate = registrationDay.plusDays(props.appPaymentTermDays)
-        )
+        private val PHONE_FORMAT = Regex("[0-9]{9}")
     }
 
     /**
-     * Registra el préstamo de una solicitud PENDIENTE y, en la misma transacción, pasa la solicitud a
-     * PROCESADA con su código de operación. Si algo falla, no se guarda ninguno de los dos.
+     * "Guardar operación": crea el préstamo y su cronograma y pasa la solicitud a PROCESADA, todo en una
+     * transacción (si algo falla no queda nada a medias). Del cliente solo se usan idSolicitud y codigoOperacion.
      *
-     * Orden de los chequeos: la solicitud se bloquea (FOR UPDATE) y se mira primero si ya tiene préstamo,
-     * para que un reintento de la app (aunque sea al día siguiente) reciba 409 con el id existente y no
-     * un 400 por fechas o un 422 por estado. Nunca 404: la app lo trata como "endpoint no publicado".
+     * 404 solicitud inexistente · 409 no PENDIENTE o código repetido · 422 datos de la solicitud inválidos.
      */
     @Transactional
     fun register(request: LoanRegisterRequest, createdBy: String?): LoanRegisterResponse {
@@ -67,87 +51,143 @@ class LoanService(
             "codigoOperacion: no puede tener más de $MAX_OPERATION_CODE_LENGTH caracteres"
         }
 
+        // FOR UPDATE: dos registros simultáneos de la misma solicitud se serializan; el segundo ve PROCESADA
         val loanRequest = loanRequestRepository.findByIdForUpdate(requestId)
-            ?: throw BusinessException("La solicitud $requestId no existe")
+            ?: throw ResourceNotFoundException("La solicitud $requestId no existe")
 
-        loanRepository.findByLoanRequestId(requestId)?.let {
-            throw ConflictException("La solicitud ya tiene un préstamo registrado", idPrestamo = it.id)
-        }
         if (loanRequest.status != LoanRequestStatus.PENDIENTE) {
-            throw BusinessException("La solicitud no está PENDIENTE (estado actual: ${loanRequest.status})")
+            throw ConflictException(
+                "La solicitud no está PENDIENTE (estado actual: ${loanRequest.status})",
+                idPrestamo = loanRepository.findByLoanRequestId(requestId)?.id
+            )
         }
-
-        val now = clock.instant().truncatedTo(ChronoUnit.MICROS)
-        val terms = terms(loanRequest.requestedAmount, LocalDate.ofInstant(now, props.zone))
-        validateAgainst(request, loanRequest, terms)
-
         if (loanRepository.existsByOperationCode(operationCode)) throw duplicatedOperationCode(operationCode)
 
+        val plan = LoanPlan.forFrequency(loanRequest.installmentFrequency)
+            ?: throw BusinessException(
+                "La solicitud tiene una frecuencia de cuota inválida (${loanRequest.installmentFrequency}); " +
+                    "se permite ${LoanPlan.allowedFrequencies.joinToString(" o ")} días"
+            )
+        if (loanRequest.requestedAmount <= 0) throw BusinessException("La solicitud tiene un monto inválido")
+
+        // Prevalece la hora del servidor en que se registra la operación (nunca la del cliente ni la de la solicitud)
+        val operationRegisteredAt = clock.instant().truncatedTo(ChronoUnit.SECONDS)
+        val disbursementDate = LoanScheduleCalculator.disbursementDate(operationRegisteredAt, props.zone)
+        val schedule = LoanScheduleCalculator.calculate(loanRequest.requestedAmount, plan, disbursementDate)
+
         val loan = try {
-            loanRepository.saveAndFlush(newLoan(loanRequest, operationCode, terms, createdBy, now))
+            loanRepository.saveAndFlush(newLoan(loanRequest, operationCode, schedule, createdBy, operationRegisteredAt))
         } catch (e: DataIntegrityViolationException) {
-            // Carrera con otro préstamo que usó el mismo código entre el exists y el insert.
-            // (Una carrera sobre la misma solicitud no llega aquí: la serializa el FOR UPDATE.)
+            // Carrera con otro préstamo que usó el mismo código entre el exists y el insert
             throw duplicatedOperationCode(operationCode)
         }
 
+        val installments = loanInstallmentRepository.saveAllAndFlush(schedule.installments.map {
+            LoanInstallment(
+                loanId = loan.id!!, installmentNumber = it.number, dueDate = it.dueDate,
+                amount = it.amount, createdAt = operationRegisteredAt
+            )
+        })
+
         loanRequest.status = LoanRequestStatus.PROCESADA
         loanRequest.operationCode = operationCode
-        loanRequest.updatedAt = now
+        loanRequest.processedAt = operationRegisteredAt
+        loanRequest.updatedAt = operationRegisteredAt
         loanRequestRepository.saveAndFlush(loanRequest)
 
+        log.info("Préstamo {} registrado para la solicitud {} ({} x{})", loan.id, requestId, plan, plan.installmentCount)
+
         return LoanRegisterResponse(
-            id = loan.id!!,
+            idPrestamo = loan.id!!,
             idSolicitud = loan.loanRequestId,
-            monto = loan.amount,
-            interes = loan.interest,
-            totalAPagar = loan.totalAmount,
             codigoOperacion = loan.operationCode,
-            fechaPago = loan.paymentDate,
-            fechaPagoApp = loan.appPaymentDate,
-            estado = loan.status.name,
-            fechaRegistro = loan.createdAt
+            fechaRegistroOperacion = operationRegisteredAt.atZone(props.zone).toOffsetDateTime(),
+            fechaDesembolso = loan.disbursementDate,
+            montoDesembolsado = loan.amount,
+            tasaInteres = LoanScheduleCalculator.basisPointsToPercent(plan.interestRateBp),
+            montoInteres = loan.interest,
+            montoTotal = loan.totalAmount,
+            frecuenciaCuota = loan.installmentFrequency,
+            numeroCuotas = loan.installmentCount,
+            plazoDias = loan.termDays,
+            cuotas = installments.sortedBy { it.installmentNumber }.map {
+                LoanInstallmentResponse(it.installmentNumber, it.dueDate, it.amount, it.status.name)
+            }
         )
     }
 
-    /** La app manda lo que muestra; el servidor recalcula y rechaza cualquier diferencia, campo por campo. */
-    private fun validateAgainst(request: LoanRegisterRequest, loanRequest: LoanRequest, terms: LoanTerms) {
-        val errors = buildList {
-            if (request.monto != loanRequest.requestedAmount)
-                add("monto: debe ser igual al monto de la solicitud (${loanRequest.requestedAmount})")
-            if (request.puntaje != loanRequest.score)
-                add("puntaje: debe coincidir con el de la solicitud (${loanRequest.score})")
-            if (request.categoria != loanRequest.category.name)
-                add("categoria: debe coincidir con la de la solicitud (${loanRequest.category.name})")
-            if (request.interes != terms.interest)
-                add("interes: valor esperado ${terms.interest}")
-            if (request.fechaPago != terms.paymentDate)
-                add("fechaPago: valor esperado ${terms.paymentDate}")
-            if (request.fechaPagoApp != terms.appPaymentDate)
-                add("fechaPagoApp: valor esperado ${terms.appPaymentDate}")
+    /**
+     * Situación actual de un celular: préstamo VIGENTE (con la próxima cuota sin pagar) o, si no hay,
+     * solicitud PENDIENTE. Sin ninguno de los dos -> 404.
+     */
+    @Transactional(readOnly = true)
+    fun current(phone: String): CurrentLoanResponse {
+        require(PHONE_FORMAT.matches(phone)) { "Celular debe tener 9 dígitos numéricos" }
+
+        loanRepository.findFirstByPhoneAndStatusOrderByCreatedAtDesc(phone, LoanStatus.VIGENTE)?.let { loan ->
+            val installments = loanInstallmentRepository.findAllByLoanIdOrderByInstallmentNumberAsc(loan.id!!)
+            val next = installments.firstOrNull { it.status != InstallmentStatus.PAGADA }
+            if (next != null) {
+                return CurrentLoanResponse(
+                    tipo = CurrentLoanType.PRESTAMO_ACTIVO,
+                    idSolicitud = loan.loanRequestId,
+                    estado = loan.status.name,
+                    carteraDigital = loan.depositType.name,
+                    frecuenciaCuota = loan.installmentFrequency,
+                    idPrestamo = loan.id!!,
+                    codigoOperacion = loan.operationCode,
+                    fechaDesembolso = loan.disbursementDate,
+                    montoDesembolsado = loan.amount,
+                    montoTotal = loan.totalAmount,
+                    saldoPendiente = loan.outstandingBalance,
+                    montoCuota = next.amount,
+                    numeroCuota = next.installmentNumber,
+                    totalCuotas = installments.size,
+                    fechaVencimiento = next.dueDate,
+                    estadoCuota = next.status.name
+                )
+            }
         }
-        require(errors.isEmpty()) { errors.joinToString(", ") }
+
+        val pending = loanRequestRepository.findFirstByPhoneAndStatusOrderByCreatedAtDesc(phone, LoanRequestStatus.PENDIENTE)
+            ?: throw ResourceNotFoundException("No hay préstamo activo ni solicitud pendiente para el celular")
+        return CurrentLoanResponse(
+            tipo = CurrentLoanType.SOLICITUD,
+            idSolicitud = pending.id!!,
+            estado = pending.status.name,
+            carteraDigital = pending.depositType.name,
+            montoSolicitado = pending.requestedAmount,
+            frecuenciaCuota = pending.installmentFrequency
+        )
     }
 
     private fun newLoan(
-        loanRequest: LoanRequest, operationCode: String, terms: LoanTerms, createdBy: String?, now: Instant
+        loanRequest: LoanRequest, operationCode: String, schedule: LoanSchedule, createdBy: String?, now: Instant
     ) = Loan(
         loanRequestId = loanRequest.id!!,
         userId = loanRequest.userId,
-        amount = loanRequest.requestedAmount,
-        interest = terms.interest,
-        interestRate = props.interestRate,
-        totalAmount = terms.totalAmount,
+        phone = loanRequest.phone,
+        amount = schedule.principal,
+        interest = schedule.interest,
+        interestRate = LoanScheduleCalculator.basisPointsToFraction(schedule.plan.interestRateBp),
+        totalAmount = schedule.total,
+        installmentFrequency = schedule.plan.frequencyDays,
+        installmentCount = schedule.plan.installmentCount,
+        termDays = LoanPlan.TERM_DAYS,
         operationCode = operationCode,
         score = loanRequest.score,
         category = loanRequest.category,
         depositType = loanRequest.depositType,
-        paymentDate = terms.paymentDate,
-        appPaymentDate = terms.appPaymentDate,
+        operationRegisteredAt = now,
+        disbursementDate = schedule.disbursementDate,
+        requestDate = loanRequest.createdAt,
+        paymentDate = schedule.finalDueDate,
+        appPaymentDate = schedule.finalDueDate,
+        outstandingBalance = schedule.total,
         createdBy = createdBy,
         createdAt = now
     )
 
     private fun duplicatedOperationCode(code: String) =
-        ConflictException("El codigoOperacion '$code' ya se usó en otro préstamo")
+        ConflictException("El codigoOperacion '$code' ya está registrado en otro préstamo")
 }

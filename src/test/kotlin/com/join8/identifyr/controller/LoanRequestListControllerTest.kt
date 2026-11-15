@@ -7,7 +7,6 @@ import com.join8.identifyr.repository.LoanRequestRepository
 import com.join8.identifyr.repository.UserRepository
 import com.nimbusds.jose.jwk.source.ImmutableSecret
 import com.nimbusds.jose.proc.SecurityContext
-import org.hamcrest.Matchers.containsString
 import org.hamcrest.Matchers.hasSize
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -33,6 +32,7 @@ import java.util.*
 import javax.crypto.spec.SecretKeySpec
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -94,140 +94,154 @@ class LoanRequestListControllerTest {
             photoBack = UUID.randomUUID().toString(), passwordHash = "")
     ).id!!
 
-    /** created/updated: minutos desde [base]. */
+    /** created/updated/processed: minutos desde [base]. */
     private fun loan(
         status: LoanRequestStatus,
         created: Long,
         updated: Long = created,
-        operationCode: String? = null,
+        processed: Long? = if (status == LoanRequestStatus.PROCESADA) updated else null,
+        operationCode: String? = if (status == LoanRequestStatus.PROCESADA) "OP-${UUID.randomUUID()}" else null,
         phone: String = "987654321",
-        amount: Int = 200
+        amount: Int = 200,
+        category: LoanCategory = LoanCategory.ORO,
+        depositType: DepositType = DepositType.YAPE
     ): LoanRequest = loanRequestRepository.save(
         LoanRequest(
-            userId = newUser(), phone = phone, depositType = DepositType.YAPE, category = LoanCategory.ORO,
+            userId = newUser(), phone = phone, depositType = depositType, category = category,
             score = 720, requestedAmount = amount, status = status, operationCode = operationCode,
+            processedAt = processed?.let { base.plus(it, ChronoUnit.MINUTES) },
             createdAt = base.plus(created, ChronoUnit.MINUTES), updatedAt = base.plus(updated, ChronoUnit.MINUTES)
         )
     )
 
-    private fun JsonNode.ids() = this["items"].map { it["id"].asText() }
+    private fun JsonNode.ids() = map { it["idSolicitud"].asText() }
+    private fun ids(vararg r: LoanRequest) = r.map { it.id.toString() }
 
-    // --- tests ---
+    /** Una solicitud de cada estado. */
+    private fun mixed() {
+        loan(LoanRequestStatus.PENDIENTE, created = 100)
+        loan(LoanRequestStatus.PROCESADA, created = 100, updated = 200)
+        loan(LoanRequestStatus.RECHAZADA, created = 100, updated = 200)
+    }
+
+    // --- casos obligatorios ---
 
     @Test
-    fun `PENDIENTE devuelve solo pendientes de la mas antigua a la mas reciente`() {
+    fun `caso 1 - PENDIENTE devuelve solo pendientes de la mas antigua a la mas reciente`() {
         val p2 = loan(LoanRequestStatus.PENDIENTE, created = 20)
         val p1 = loan(LoanRequestStatus.PENDIENTE, created = 5)
-        val p3 = loan(LoanRequestStatus.PENDIENTE, created = 30, updated = 31)
-        loan(LoanRequestStatus.PROCESADA, created = 1, updated = 40, operationCode = "OP-1")
-        loan(LoanRequestStatus.RECHAZADA, created = 2, updated = 41)
-
-        val body = json(list("estado=PENDIENTE"))
-        assertEquals(listOf(p1, p2, p3).map { it.id.toString() }, body.ids())
-        body["items"].forEach { assertEquals("PENDIENTE", it["estado"].asText()) }
-    }
-
-    @Test
-    fun `PROCESADA trae codigoOperacion y va de la mas reciente a la mas antigua por updated_at`() {
-        // created y updated en orden distinto: debe mandar updated_at
-        val old = loan(LoanRequestStatus.PROCESADA, created = 50, updated = 60, operationCode = "OP-OLD")
-        val newest = loan(LoanRequestStatus.PROCESADA, created = 1, updated = 90, operationCode = "OP-NEW")
-        val middle = loan(LoanRequestStatus.PROCESADA, created = 10, updated = 70, operationCode = "OP-MID")
-        loan(LoanRequestStatus.PENDIENTE, created = 0)
-
-        val body = json(list("estado=PROCESADA"))
-        assertEquals(listOf(newest, middle, old).map { it.id.toString() }, body.ids())
-        assertEquals(listOf("OP-NEW", "OP-MID", "OP-OLD"), body["items"].map { it["codigoOperacion"].asText() })
-    }
-
-    @Test
-    fun `RECHAZADA va de la mas reciente a la mas antigua por updated_at`() {
-        val a = loan(LoanRequestStatus.RECHAZADA, created = 0, updated = 10)
-        val b = loan(LoanRequestStatus.RECHAZADA, created = 5, updated = 20)
-        assertEquals(listOf(b, a).map { it.id.toString() }, json(list("estado=RECHAZADA")).ids())
-    }
-
-    @Test
-    fun `codigoOperacion es null en PENDIENTE y RECHAZADA y la clave se envia`() {
-        loan(LoanRequestStatus.PENDIENTE, created = 0)
+        val p3 = loan(LoanRequestStatus.PENDIENTE, created = 40)
+        loan(LoanRequestStatus.PROCESADA, created = 1, updated = 2)
         loan(LoanRequestStatus.RECHAZADA, created = 1, updated = 2)
 
-        listOf("PENDIENTE", "RECHAZADA").forEach { estado ->
-            val item = json(list("estado=$estado"))["items"].single()
-            assertEquals(true, item.has("codigoOperacion"), "falta la clave codigoOperacion en $estado")
-            assertEquals(true, item["codigoOperacion"].isNull)
+        val body = json(list("estado=PENDIENTE"))
+        assertTrue(body.isArray)
+        assertEquals(ids(p1, p2, p3), body.ids())
+        body.forEach {
+            assertEquals("PENDIENTE", it["estado"].asText())
+            assertTrue(it["codigoOperacion"].isNull)
         }
     }
 
     @Test
-    fun `conteos trae los tres estados aunque alguno sea 0`() {
-        repeat(3) { loan(LoanRequestStatus.PENDIENTE, created = it.toLong()) }
-        loan(LoanRequestStatus.PROCESADA, created = 10, operationCode = "OP-1")
+    fun `caso 2 - PROCESADA trae codigoOperacion y va de la ultima procesada a la primera`() {
+        mixed()
+        // updated_at en otro orden: se ordena por processed_at, no por updated_at
+        val old = loan(LoanRequestStatus.PROCESADA, created = 0, updated = 900, processed = 10, operationCode = "OP-OLD")
+        val newest = loan(LoanRequestStatus.PROCESADA, created = 0, updated = 1, processed = 500, operationCode = "OP-NEW")
+        val middle = loan(LoanRequestStatus.PROCESADA, created = 0, updated = 2, processed = 300, operationCode = "OP-MID")
 
-        // El conteo es global: igual sin importar la pestaña consultada
-        listOf("PENDIENTE", "PROCESADA", "RECHAZADA").forEach { estado ->
-            list("estado=$estado")
-                .andExpect(status().isOk)
-                .andExpect(jsonPath("$.conteos.PENDIENTE").value(3))
-                .andExpect(jsonPath("$.conteos.PROCESADA").value(1))
-                .andExpect(jsonPath("$.conteos.RECHAZADA").value(0))
+        val body = json(list("estado=PROCESADA"))
+        assertEquals(4, body.size())
+        assertEquals(ids(newest, middle), body.ids().take(2))
+        assertEquals(old.id.toString(), body.ids().last())
+        body.forEach {
+            assertEquals("PROCESADA", it["estado"].asText())
+            assertTrue(it["codigoOperacion"].isTextual && it["codigoOperacion"].asText().isNotBlank())
+        }
+        assertEquals("OP-NEW", body[0]["codigoOperacion"].asText())
+    }
+
+    @Test
+    fun `caso 3 - RECHAZADA devuelve solo rechazadas, sin codigoOperacion, la mas reciente primero`() {
+        mixed()
+        val a = loan(LoanRequestStatus.RECHAZADA, created = 0, updated = 10)
+        // Aunque tuviera un código guardado, en RECHAZADA se envía null
+        val b = loan(LoanRequestStatus.RECHAZADA, created = 0, updated = 300, operationCode = "OP-X")
+
+        val body = json(list("estado=RECHAZADA"))
+        assertEquals(3, body.size())
+        assertEquals(b.id.toString(), body.ids().first())
+        assertEquals(a.id.toString(), body.ids().last())
+        body.forEach {
+            assertEquals("RECHAZADA", it["estado"].asText())
+            assertTrue(it.has("codigoOperacion"), "la clave se envía aunque sea null")
+            assertTrue(it["codigoOperacion"].isNull)
         }
     }
 
     @Test
-    fun `sin resultados devuelve 200 con items vacio`() {
-        list("estado=RECHAZADA")
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.items", hasSize<Any>(0)))
-            .andExpect(jsonPath("$.totalItems").value(0))
-            .andExpect(jsonPath("$.totalPages").value(0))
-            .andExpect(jsonPath("$.conteos.PENDIENTE").value(0))
-            .andExpect(jsonPath("$.conteos.PROCESADA").value(0))
-            .andExpect(jsonPath("$.conteos.RECHAZADA").value(0))
-    }
-
-    @Test
-    fun `estado faltante o invalido y page o size fuera de rango devuelven 400`() {
-        list("").andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.message", containsString("estado es obligatorio")))
-        list("estado=").andExpect(status().isBadRequest)
-        list("estado=pendiente").andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.message", containsString("estado inválido")))
-        list("estado=APROBADA").andExpect(status().isBadRequest)
-        list("estado=PENDIENTE&size=0").andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.message", containsString("size debe estar entre 1 y 100")))
-        list("estado=PENDIENTE&size=101").andExpect(status().isBadRequest)
-        list("estado=PENDIENTE&page=-1").andExpect(status().isBadRequest)
-        list("estado=PENDIENTE&page=abc").andExpect(status().isBadRequest)
-        list("estado=PENDIENTE&size=1&page=0").andExpect(status().isOk)
-        list("estado=PENDIENTE&size=100").andExpect(status().isOk)
-    }
-
-    @Test
-    fun `paginacion coherente`() {
-        val all = (0L until 5L).map { loan(LoanRequestStatus.PENDIENTE, created = it) }
-
-        val defaults = json(list("estado=PENDIENTE"))
-        assertEquals(0, defaults["page"].asInt())
-        assertEquals(20, defaults["size"].asInt())
-        assertEquals(5, defaults["items"].size())
-
-        val pages = (0..2).map { json(list("estado=PENDIENTE&page=$it&size=2")) }
-        pages.forEachIndexed { i, page ->
-            assertEquals(i, page["page"].asInt())
-            assertEquals(2, page["size"].asInt())
-            assertEquals(5, page["totalItems"].asLong())
-            assertEquals(3, page["totalPages"].asInt())
+    fun `caso 4 - estado sin distinguir mayusculas y con espacios`() {
+        mixed()
+        val expected = json(list("estado=PENDIENTE")).ids()
+        assertEquals(1, expected.size)
+        for (v in listOf("pendiente", "Pendiente", "pEnDiEnTe", " pendiente ", "  PENDIENTE	")) {
+            val result = mockMvc.perform(get("/loan-requests").param("estado", v)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer $supervisorToken"))
+            assertEquals(expected, json(result).ids(), "'$v'")
         }
-        assertEquals(listOf(2, 2, 1), pages.map { it["items"].size() })
-        assertEquals(all.map { it.id.toString() }, pages.flatMap { it.ids() })
-
-        // Página más allá del final: 200 vacío con los mismos totales
-        val beyond = json(list("estado=PENDIENTE&page=3&size=2"))
-        assertEquals(0, beyond["items"].size())
-        assertEquals(5, beyond["totalItems"].asLong())
-        assertEquals(3, beyond["totalPages"].asInt())
+        assertEquals(1, json(list("estado=procesada")).size())
+        assertEquals(1, json(list("estado=rechazada")).size())
     }
+
+    @Test
+    fun `caso 5 - sin estado o con otro valor devuelve 400 con mensaje claro`() {
+        list("x=1").andExpect(status().isBadRequest)
+        mockMvc.perform(get("/loan-requests").param("estado", "   ")).andExpect(status().isBadRequest)
+        for (q in listOf("", "estado=", "estado=OTRO", "estado=PENDING", "estado=1", "estado=TODAS")) {
+            list(q).andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.message").value("estado debe ser PENDIENTE, PROCESADA o RECHAZADA"))
+        }
+    }
+
+    @Test
+    fun `caso 6 - sin resultados devuelve 200 con arreglo vacio`() {
+        loan(LoanRequestStatus.PENDIENTE, created = 0)
+        for (estado in listOf("PROCESADA", "RECHAZADA")) {
+            val raw = list("estado=$estado").andExpect(status().isOk).andReturn().response.contentAsString
+            assertEquals("[]", raw.filterNot { it.isWhitespace() })
+        }
+    }
+
+    @Test
+    fun `caso 8 - montoSolicitado es entero y las claves son exactamente las del contrato`() {
+        val saved = loan(LoanRequestStatus.PROCESADA, created = 0, operationCode = "OP-9", phone = "912345678",
+            amount = 150, category = LoanCategory.PLATA, depositType = DepositType.PLIN)
+
+        val raw = list("estado=PROCESADA").andExpect(status().isOk).andReturn().response.contentAsString
+        assertTrue(Regex("\"montoSolicitado\"\\s*:\\s*150\\s*[,}\\n]").containsMatchIn(raw), raw)
+
+        val item = objectMapper.readTree(raw).single()
+        assertEquals(
+            setOf("idSolicitud", "numCelular", "montoSolicitado", "puntaje", "categoria", "estado",
+                "codigoOperacion", "carteraDigital"),
+            item.fieldNames().asSequence().toSet()
+        )
+        assertTrue(item["montoSolicitado"].isInt)
+        assertTrue(item["puntaje"].isInt)
+        assertTrue(item["idSolicitud"].isTextual)
+        assertTrue(item["numCelular"].isTextual)
+        assertEquals(saved.id.toString(), item["idSolicitud"].asText())
+        assertEquals("912345678", item["numCelular"].asText())
+        assertEquals(150, item["montoSolicitado"].asInt())
+        assertEquals(720, item["puntaje"].asInt())
+        assertEquals("PLATA", item["categoria"].asText())
+        assertEquals("PROCESADA", item["estado"].asText())
+        assertEquals("OP-9", item["codigoOperacion"].asText())
+        assertEquals("PLIN", item["carteraDigital"].asText())
+    }
+
+    // --- seguridad ---
 
     @Test
     fun `sin token o con token vacio entrega el listado (temporal, allow-anonymous=true)`() {
@@ -236,8 +250,7 @@ class LoanRequestListControllerTest {
         listOf(null, "", "Bearer", "Bearer ", "Bearer    ", "bearer", "Bearer null").forEach { header ->
             listWithHeader("estado=PENDIENTE", header)
                 .andExpect(status().isOk)
-                .andExpect(jsonPath("$.items", hasSize<Any>(1)))
-                .andExpect(jsonPath("$.conteos.PENDIENTE").value(1))
+                .andExpect(jsonPath("$", hasSize<Any>(1)))
         }
         // Las validaciones siguen aplicando sin token
         listWithHeader("estado=XYZ", null).andExpect(status().isBadRequest)
@@ -266,36 +279,5 @@ class LoanRequestListControllerTest {
                 .content("""{"idUsuario":"$userId","numCelular":"987654321","tipoDeposito":"YAPE",
                     "categoria":"ORO","puntaje":720,"montoSolicitado":200}""")
         ).andExpect(status().isCreated)
-    }
-
-    @Test
-    fun `las claves JSON de la respuesta son exactamente las del ejemplo`() {
-        val saved = loan(LoanRequestStatus.PROCESADA, created = 0, updated = 5, operationCode = "OP-9", phone = "912345678", amount = 150)
-
-        val body = json(list("estado=PROCESADA&page=0&size=20"))
-        assertEquals(
-            setOf("items", "page", "size", "totalItems", "totalPages", "conteos"),
-            body.fieldNames().asSequence().toSet()
-        )
-        assertEquals(listOf("PENDIENTE", "PROCESADA", "RECHAZADA"), body["conteos"].fieldNames().asSequence().toList())
-
-        val item = body["items"].single()
-        assertEquals(
-            setOf("id", "idUsuario", "numCelular", "montoSolicitado", "puntaje", "categoria", "tipoDeposito",
-                "estado", "codigoOperacion", "fechaRegistro", "fechaActualizacion"),
-            item.fieldNames().asSequence().toSet()
-        )
-        assertEquals(saved.id.toString(), item["id"].asText())
-        assertEquals(saved.userId.toString(), item["idUsuario"].asText())
-        assertEquals("912345678", item["numCelular"].asText())
-        assertEquals(150, item["montoSolicitado"].asInt())
-        assertEquals(720, item["puntaje"].asInt())
-        assertEquals("ORO", item["categoria"].asText())
-        assertEquals("YAPE", item["tipoDeposito"].asText())
-        assertEquals("PROCESADA", item["estado"].asText())
-        assertEquals("OP-9", item["codigoOperacion"].asText())
-        // ISO-8601 en UTC
-        assertEquals("2026-11-01T10:00:00Z", item["fechaRegistro"].asText())
-        assertEquals("2026-11-01T10:05:00Z", item["fechaActualizacion"].asText())
     }
 }

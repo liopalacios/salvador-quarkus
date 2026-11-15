@@ -1,7 +1,7 @@
 package com.join8.identifyr.controller
 
 import com.join8.identifyr.model.dto.request.LoanRequestRegisterRequest
-import com.join8.identifyr.model.dto.response.LoanRequestListResponse
+import com.join8.identifyr.model.dto.response.LoanRequestItemResponse
 import com.join8.identifyr.model.dto.response.LoanRequestRegisterResponse
 import com.join8.identifyr.service.LoanRequestService
 import jakarta.validation.Valid
@@ -23,12 +23,8 @@ class LoanRequestController(
     ): ResponseEntity<LoanRequestRegisterResponse> =
         ResponseEntity.status(HttpStatus.CREATED).body(loanRequestService.register(request))
 
-    // Solo supervisor (ver SecurityConfig). Sin resultados -> 200 con items vacío, nunca 404.
+    // Solo supervisor (ver SecurityConfig). Arreglo sin envoltorio; sin resultados -> 200 con [].
     @GetMapping
-    fun list(
-        @RequestParam(required = false) estado: String?,
-        @RequestParam(defaultValue = "0") page: Int,
-        @RequestParam(defaultValue = "20") size: Int
-    ): ResponseEntity<LoanRequestListResponse> =
-        ResponseEntity.ok(loanRequestService.list(estado, page, size))
+    fun list(@RequestParam(required = false) estado: String?): ResponseEntity<List<LoanRequestItemResponse>> =
+        ResponseEntity.ok(loanRequestService.list(estado))
 }

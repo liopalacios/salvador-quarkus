@@ -4,6 +4,7 @@ import com.join8.identifyr.exception.ConflictException
 import com.join8.identifyr.model.dto.request.LoanRegisterRequest
 import com.join8.identifyr.model.dto.response.LoanRegisterResponse
 import com.join8.identifyr.model.entity.*
+import com.join8.identifyr.repository.LoanInstallmentRepository
 import com.join8.identifyr.repository.LoanRepository
 import com.join8.identifyr.repository.LoanRequestRepository
 import com.join8.identifyr.repository.UserRepository
@@ -16,15 +17,15 @@ import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.bean.override.mockito.MockitoBean
 import java.time.Clock
 import java.time.Instant
-import java.time.LocalDate
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
-/** Dos supervisores guardan a la vez: uno obtiene el préstamo y el otro un 409 (ConflictException). */
+/** Dos supervisores guardan a la vez: uno crea el préstamo y el otro recibe 409 (ConflictException). */
 @SpringBootTest
 @ActiveProfiles("test")
 class LoanServiceConcurrencyTest {
@@ -33,15 +34,17 @@ class LoanServiceConcurrencyTest {
     @Autowired lateinit var userRepository: UserRepository
     @Autowired lateinit var loanRequestRepository: LoanRequestRepository
     @Autowired lateinit var loanRepository: LoanRepository
+    @Autowired lateinit var installmentRepository: LoanInstallmentRepository
     @MockitoBean lateinit var clock: Clock
 
     @BeforeEach
     fun fixClock() {
-        `when`(clock.instant()).thenReturn(Instant.parse("2026-11-01T19:32:10Z"))
+        `when`(clock.instant()).thenReturn(Instant.parse("2026-11-14T15:32:05Z"))
     }
 
     @AfterEach
     fun cleanUp() {
+        installmentRepository.deleteAll()
         loanRepository.deleteAll()
         loanRequestRepository.deleteAll()
         userRepository.deleteAll()
@@ -54,15 +57,12 @@ class LoanServiceConcurrencyTest {
         ).id!!
         return loanRequestRepository.save(
             LoanRequest(userId = userId, phone = "987654321", depositType = DepositType.YAPE,
-                category = LoanCategory.ORO, score = 72, requestedAmount = 200)
+                category = LoanCategory.ORO, score = 72, requestedAmount = 200, installmentFrequency = 15)
         )
     }
 
-    private fun body(requestId: UUID, operationCode: String) = LoanRegisterRequest(
-        idSolicitud = requestId.toString(), monto = 200, codigoOperacion = operationCode, puntaje = 72,
-        categoria = "ORO", interes = 36, fechaPago = LocalDate.parse("2026-11-08"),
-        fechaPagoApp = LocalDate.parse("2027-01-01")
-    )
+    private fun body(requestId: UUID, operationCode: String) =
+        LoanRegisterRequest(idSolicitud = requestId.toString(), codigoOperacion = operationCode)
 
     /** Lanza todas las llamadas a la vez y devuelve el resultado de cada una (respuesta o excepción). */
     private fun runConcurrently(vararg calls: () -> LoanRegisterResponse): List<Result<LoanRegisterResponse>> {
@@ -78,7 +78,7 @@ class LoanServiceConcurrencyTest {
     }
 
     @Test
-    fun `misma solicitud a la vez - uno registra y el otro recibe 409 con el id existente`() {
+    fun `misma solicitud a la vez - uno crea el prestamo y el otro recibe 409`() {
         repeat(5) {   // varias rondas para cubrir distintos entrelazados
             val request = pendingRequest()
             val results = runConcurrently(
@@ -86,14 +86,16 @@ class LoanServiceConcurrencyTest {
                 { service.register(body(request.id!!, "OP-B-$it"), "supervisor-2") }
             )
 
-            val ok = results.mapNotNull { it.getOrNull() }
-            val conflicts = results.mapNotNull { it.exceptionOrNull() }
+            val ok = results.mapNotNull { r -> r.getOrNull() }
+            val failures = results.mapNotNull { r -> r.exceptionOrNull() }
             assertEquals(1, ok.size, "ronda $it: resultados $results")
-            assertEquals(1, conflicts.size, "ronda $it: resultados $results")
-            val conflict = conflicts.single() as ConflictException
-            assertEquals(ok.single().id, conflict.idPrestamo)
+            assertEquals(1, failures.size, "ronda $it: resultados $results")
+            val conflict = failures.single() as ConflictException
+            assertEquals(ok.single().idPrestamo, conflict.idPrestamo)
 
-            assertEquals(1, loanRepository.findAll().count { l -> l.loanRequestId == request.id })
+            val loans = loanRepository.findAll().filter { l -> l.loanRequestId == request.id }
+            assertEquals(1, loans.size)
+            assertEquals(4, installmentRepository.findAllByLoanIdOrderByInstallmentNumberAsc(loans.single().id!!).size)
             val reloaded = loanRequestRepository.findById(request.id!!).get()
             assertEquals(LoanRequestStatus.PROCESADA, reloaded.status)
             assertEquals(ok.single().codigoOperacion, reloaded.operationCode)
@@ -115,11 +117,13 @@ class LoanServiceConcurrencyTest {
             val failure = results.single { r -> r.isFailure }.exceptionOrNull()!!
             assertEquals(ConflictException::class, failure::class, "ronda $it: $failure")
 
-            // La solicitud perdedora sigue PENDIENTE y sin código: no quedó nada a medias
+            // La solicitud perdedora sigue PENDIENTE, sin código y sin préstamo ni cuotas: nada a medias
             val loserId = if (results[0].isSuccess) second.id!! else first.id!!
             val loser = loanRequestRepository.findById(loserId).get()
             assertEquals(LoanRequestStatus.PENDIENTE, loser.status)
-            assertEquals(null, loser.operationCode)
+            assertNull(loser.operationCode)
+            assertNull(loanRepository.findByLoanRequestId(loserId))
         }
+        assertEquals(loanRepository.count() * 4, installmentRepository.count())
     }
 }

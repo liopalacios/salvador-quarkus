@@ -93,6 +93,8 @@ class SecurityConfig {
                     // Registro de préstamos (desembolso): solo supervisor
                     .requestMatchers(HttpMethod.POST, "/loans/register")
                     .access(supervisorAccess(allowAnonymousSupervisor))
+                    // Préstamo/solicitud actual por celular: app del cliente, sin token (con rate limit)
+                    .requestMatchers(HttpMethod.GET, "/loans/current/phone/*").permitAll()
                     .requestMatchers(
                         "/users/register",
                         "/users/**",

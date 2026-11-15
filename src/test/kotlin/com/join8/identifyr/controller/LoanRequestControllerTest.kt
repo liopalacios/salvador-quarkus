@@ -237,4 +237,18 @@ class LoanRequestControllerTest {
         }
         assertEquals(0, loanRequestRepository.count())
     }
+
+    @Test
+    fun `frecuenciaCuota 15 o 30 se guarda, otro valor devuelve 400 y sin ella queda null`() {
+        val withFreq = body().trim().removeSuffix("}") + ""","frecuenciaCuota":30}"""
+        register(withFreq).andExpect(status().isCreated)
+        assertEquals(30, loanRequestRepository.findAllByUserId(userId).single().installmentFrequency)
+
+        loanRequestRepository.deleteAll()
+        register(body().trim().removeSuffix("}") + ""","frecuenciaCuota":7}""").andExpect(status().isBadRequest)
+        assertEquals(0, loanRequestRepository.count())
+
+        register(body()).andExpect(status().isCreated)
+        assertEquals(null, loanRequestRepository.findAllByUserId(userId).single().installmentFrequency)
+    }
 }
