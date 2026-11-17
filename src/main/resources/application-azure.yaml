@@ -23,6 +23,11 @@ logging:
 jwt:
   secret: ${JWT_SECRET}
 
+# Solo HTTPS: el ingress termina TLS y envía X-Forwarded-Proto (lo procesa Tomcat, ver forward-headers-strategy).
+# Además, en la Container App: ingress con allowInsecure=false.
+security:
+  require-https: true
+
 server:
   shutdown: graceful
   # Detrás del ingress de Container Apps (TLS termina en el proxy).

@@ -5,7 +5,10 @@ import com.join8.identifyr.model.entity.User
 import com.join8.identifyr.repository.UserRepository
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.extension.ExtendWith
+import com.join8.identifyr.support.TestTokens
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpHeaders
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.system.CapturedOutput
@@ -34,6 +37,7 @@ class UserPhoneControllerTest {
     @Autowired lateinit var mockMvc: MockMvc
     @Autowired lateinit var objectMapper: ObjectMapper
     @Autowired lateinit var userRepository: UserRepository
+    @Value("\${jwt.secret}") lateinit var jwtSecret: String
 
     @AfterEach
     fun cleanUp() = userRepository.deleteAll()
@@ -72,7 +76,7 @@ class UserPhoneControllerTest {
             lookup(phone)
                 .andExpect(status().isBadRequest)
                 .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.error").value("Bad Request"))
+                .andExpect(jsonPath("$.error").value("BAD_REQUEST"))
                 .andExpect(jsonPath("$.message").value("Celular debe tener 9 dígitos numéricos"))
                 .andExpect(jsonPath("$.timestamp").exists())
         }
@@ -91,10 +95,10 @@ class UserPhoneControllerTest {
     }
 
     @Test
-    fun `POST register sigue rechazando celular duplicado y formato invalido`() {
+    fun `POST register rechaza celular duplicado con 409 y formato invalido con 400`() {
         register("912345678").andExpect(status().isCreated)
 
-        register("912345678").andExpect(status().isBadRequest)
+        register("912345678").andExpect(status().isConflict).andExpect(jsonPath("$.error").value("CONFLICT"))
         register("9123").andExpect(status().isBadRequest)
     }
 
@@ -106,7 +110,7 @@ class UserPhoneControllerTest {
             val body = lookup(phone).andExpect(status().`is`(code)).andReturn().response.contentAsString
 
             assertEquals(setOf("exists"), objectMapper.readTree(body).fieldNames().asSequence().toSet())
-            listOf(user.id.toString(), user.email, user.address!!, user.photoFront, phone).forEach {
+            listOf(user.id.toString(), user.email, user.address!!, user.photoFront!!, phone).forEach {
                 assertFalse(body.contains(it), "la respuesta filtra $it")
             }
         }
@@ -116,10 +120,13 @@ class UserPhoneControllerTest {
     fun `la ruta no choca con GET users id`() {
         val user = saveUser("987654321")
 
-        mockMvc.perform(get("/users/${user.id}"))
+        val bearer = "Bearer ${TestTokens.user(jwtSecret, user.id!!, user.phone)}"
+        mockMvc.perform(get("/users/${user.id}").header(HttpHeaders.AUTHORIZATION, bearer))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.id").value(user.id.toString()))
-        mockMvc.perform(get("/users/phone")).andExpect(status().isBadRequest)
+        // GET /users/{id} es protegido: sin token 401; con token y un id no UUID, 400
+        mockMvc.perform(get("/users/phone")).andExpect(status().isUnauthorized)
+        mockMvc.perform(get("/users/phone").header(HttpHeaders.AUTHORIZATION, bearer)).andExpect(status().isBadRequest)
     }
 
     @Test

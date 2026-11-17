@@ -90,8 +90,7 @@ class LoanRequestListControllerTest {
         objectMapper.readTree(actions.andExpect(status().isOk).andReturn().response.contentAsString)
 
     private fun newUser(): UUID = userRepository.save(
-        User(phone = "9${(10_000_000..99_999_999).random()}", email = "", photoFront = UUID.randomUUID().toString(),
-            photoBack = UUID.randomUUID().toString(), passwordHash = "")
+        User(phone = "9${(10_000_000..99_999_999).random()}")
     ).id!!
 
     /** created/updated/processed: minutos desde [base]. */
@@ -197,7 +196,8 @@ class LoanRequestListControllerTest {
     @Test
     fun `caso 5 - sin estado o con otro valor devuelve 400 con mensaje claro`() {
         list("x=1").andExpect(status().isBadRequest)
-        mockMvc.perform(get("/loan-requests").param("estado", "   ")).andExpect(status().isBadRequest)
+        mockMvc.perform(get("/loan-requests").param("estado", "   ").header(HttpHeaders.AUTHORIZATION, "Bearer $supervisorToken"))
+            .andExpect(status().isBadRequest)
         for (q in listOf("", "estado=", "estado=OTRO", "estado=PENDING", "estado=1", "estado=TODAS")) {
             list(q).andExpect(status().isBadRequest)
                 .andExpect(jsonPath("$.message").value("estado debe ser PENDIENTE, PROCESADA o RECHAZADA"))
@@ -244,16 +244,16 @@ class LoanRequestListControllerTest {
     // --- seguridad ---
 
     @Test
-    fun `sin token o con token vacio entrega el listado (temporal, allow-anonymous=true)`() {
+    fun `sin token o con token vacio devuelve 401`() {
         loan(LoanRequestStatus.PENDIENTE, created = 0)
 
         listOf(null, "", "Bearer", "Bearer ", "Bearer    ", "bearer", "Bearer null").forEach { header ->
             listWithHeader("estado=PENDIENTE", header)
-                .andExpect(status().isOk)
-                .andExpect(jsonPath("$", hasSize<Any>(1)))
+                .andExpect(status().isUnauthorized)
+                .andExpect(jsonPath("$.error").value("UNAUTHORIZED"))
         }
-        // Las validaciones siguen aplicando sin token
-        listWithHeader("estado=XYZ", null).andExpect(status().isBadRequest)
+        // El 400 por estado inválido no se filtra antes de la autenticación
+        listWithHeader("estado=XYZ", null).andExpect(status().isUnauthorized)
     }
 
     @Test
@@ -271,11 +271,12 @@ class LoanRequestListControllerTest {
     }
 
     @Test
-    fun `el registro de solicitudes sigue siendo publico`() {
+    fun `el registro de solicitudes lo hace el cliente con su token, sin rol supervisor`() {
         val userId = newUser()
         mockMvc.perform(
             org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/loan-requests/register")
                 .contentType("application/json")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer ${com.join8.identifyr.support.TestTokens.user(jwtSecret, userId, "987654321")}")
                 .content("""{"idUsuario":"$userId","numCelular":"987654321","tipoDeposito":"YAPE",
                     "categoria":"ORO","puntaje":720,"montoSolicitado":200}""")
         ).andExpect(status().isCreated)

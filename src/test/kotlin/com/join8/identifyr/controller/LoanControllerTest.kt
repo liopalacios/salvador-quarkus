@@ -93,6 +93,12 @@ class LoanControllerTest {
         return encoder.encode(JwtEncoderParameters.from(JwsHeader.with(MacAlgorithm.HS256).build(), claims)).tokenValue
     }
 
+    private fun clientBearer(phone: String = "987654321") =
+        "Bearer ${com.join8.identifyr.support.TestTokens.user(jwtSecret, UUID.randomUUID(), phone)}"
+
+    private fun current(phone: String, authorization: String = clientBearer(phone)): ResultActions =
+        mockMvc.perform(get("/loans/current/phone/$phone").header(HttpHeaders.AUTHORIZATION, authorization))
+
     private fun loanRequest(
         status: LoanRequestStatus = LoanRequestStatus.PENDIENTE,
         amount: Int = 200,
@@ -101,8 +107,7 @@ class LoanControllerTest {
         createdAt: Instant = Instant.parse("2026-11-10T14:00:00Z")
     ): LoanRequest {
         val userId = userRepository.save(
-            User(phone = "9${(10_000_000..99_999_999).random()}", email = "", photoFront = UUID.randomUUID().toString(),
-                photoBack = UUID.randomUUID().toString(), passwordHash = "")
+            User(phone = "9${(10_000_000..99_999_999).random()}")
         ).id!!
         return loanRequestRepository.save(
             LoanRequest(userId = userId, phone = phone, depositType = DepositType.PLIN, category = LoanCategory.ORO,
@@ -344,24 +349,34 @@ class LoanControllerTest {
     }
 
     @Test
-    fun `sin token se permite mientras allow-anonymous=true y created_by queda null`() {
-        register(body(), authorization = null).andExpect(status().isCreated)
-        assertNull(loanRepository.findByLoanRequestId(pending.id!!)!!.createdBy)
+    fun `sin token devuelve 401 y con token de supervisor created_by es su sub`() {
+        register(body(), authorization = null).andExpect(status().isUnauthorized)
+        assertNothingSaved()
+        register(body()).andExpect(status().isCreated)
+        assertEquals("supervisor-1", loanRepository.findByLoanRequestId(pending.id!!)!!.createdBy)
+    }
+
+    @Test
+    fun `GET loans current phone - sin token 401, celular de otro 403, el propio o supervisor 200`() {
+        mockMvc.perform(get("/loans/current/phone/987654321")).andExpect(status().isUnauthorized)
+        current("987654321", clientBearer("911111111")).andExpect(status().isForbidden)
+        current("987654321").andExpect(status().isOk)
+        current("987654321", "Bearer $supervisorToken").andExpect(status().isOk)
     }
 
     // --- endpoints relacionados ---
 
     @Test
     fun `caso 7 del listado - tras registrar, la solicitud sale de PENDIENTE y aparece en PROCESADA con su codigo`() {
-        mockMvc.perform(get("/loan-requests?estado=PENDIENTE"))
+        mockMvc.perform(get("/loan-requests?estado=PENDIENTE").header(HttpHeaders.AUTHORIZATION, "Bearer $supervisorToken"))
             .andExpect(jsonPath("$[0].idSolicitud").value(pending.id.toString()))
 
         register(body(codigoOperacion = "OP-FLUJO")).andExpect(status().isCreated)
 
-        mockMvc.perform(get("/loan-requests?estado=PENDIENTE"))
+        mockMvc.perform(get("/loan-requests?estado=PENDIENTE").header(HttpHeaders.AUTHORIZATION, "Bearer $supervisorToken"))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$", hasSize<Any>(0)))
-        mockMvc.perform(get("/loan-requests?estado=PROCESADA"))
+        mockMvc.perform(get("/loan-requests?estado=PROCESADA").header(HttpHeaders.AUTHORIZATION, "Bearer $supervisorToken"))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$", hasSize<Any>(1)))
             .andExpect(jsonPath("$[0].idSolicitud").value(pending.id.toString()))
@@ -376,7 +391,7 @@ class LoanControllerTest {
 
     @Test
     fun `GET loans current phone - SOLICITUD antes y PRESTAMO_ACTIVO despues del registro`() {
-        mockMvc.perform(get("/loans/current/phone/987654321"))
+        current("987654321")
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.tipo").value("SOLICITUD"))
             .andExpect(jsonPath("$.idSolicitud").value(pending.id.toString()))
@@ -385,7 +400,7 @@ class LoanControllerTest {
 
         val loan = register(body()).andExpect(status().isCreated).json()
 
-        val current = mockMvc.perform(get("/loans/current/phone/987654321")).andExpect(status().isOk).json()
+        val current = current("987654321").andExpect(status().isOk).json()
         assertEquals("PRESTAMO_ACTIVO", current["tipo"].asText())
         assertEquals(loan["idPrestamo"].asText(), current["idPrestamo"].asText())
         assertEquals(BigDecimal("59.00"), current["montoCuota"].decimalValue())
@@ -398,15 +413,15 @@ class LoanControllerTest {
         val first = installmentRepository.findAllByLoanIdOrderByInstallmentNumberAsc(UUID.fromString(loan["idPrestamo"].asText()))[0]
         first.status = InstallmentStatus.PAGADA
         installmentRepository.save(first)
-        mockMvc.perform(get("/loans/current/phone/987654321"))
+        current("987654321")
             .andExpect(jsonPath("$.numeroCuota").value(2))
             .andExpect(jsonPath("$.fechaVencimiento").value("2026-12-14"))
     }
 
     @Test
     fun `GET loans current phone - 404 sin prestamo ni solicitud y 400 con celular invalido`() {
-        mockMvc.perform(get("/loans/current/phone/911111111")).andExpect(status().isNotFound)
-        mockMvc.perform(get("/loans/current/phone/12ab")).andExpect(status().isBadRequest)
+        current("911111111").andExpect(status().isNotFound)
+        current("12ab", "Bearer $supervisorToken").andExpect(status().isBadRequest)
         assertNotNull(pending.id)
     }
 }

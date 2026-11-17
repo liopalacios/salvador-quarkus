@@ -61,17 +61,22 @@ logging:
     console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
 
 # === JWT ===
+# HS256. El secreto SOLO llega por la variable de entorno JWT_SECRET (Key Vault en Azure), mínimo 32 bytes.
+# Sin valor por defecto: sin JWT_SECRET la app no arranca. En local: export JWT_SECRET=$(openssl rand -hex 32)
 jwt:
-  secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+  secret: ${JWT_SECRET}
   expiration: 86400000  # 24 horas en milisegundos
-  refresh-expiration: 604800000  # 7 días
 
-# === SUPERVISOR ===
-# TEMPORAL: la app aún no tiene login de supervisor, así que GET /loan-requests se entrega sin token.
-# Si llega un token, se valida y debe traer el rol SUPERVISOR. Pasar a false cuando exista el login.
+# === AUTENTICACIÓN ===
+auth:
+  max-failed-attempts: 3             # fallos consecutivos que bloquean el login del celular
+  lock-duration: 15m                 # bloqueo -> 423 Locked
+  password-registration-window: 15m  # plazo tras POST /users/register para POST /auth/register-password
+
+# === SEGURIDAD ===
+# true en Azure (application-azure.yaml): rechaza lo que no llegue por HTTPS.
 security:
-  supervisor:
-    allow-anonymous: true
+  require-https: false
 
 # === RATE LIMITING ===
 # Por IP y por réplica, con un contador por ruta. Holgado porque muchos usuarios móviles comparten IP pública (CGNAT).
@@ -83,6 +88,12 @@ rate-limit:
     max-requests: 30
     window-seconds: 60
   user-register:
+    max-requests: 10
+    window-seconds: 60
+  auth-login:
+    max-requests: 10
+    window-seconds: 60
+  register-password:
     max-requests: 10
     window-seconds: 60
 

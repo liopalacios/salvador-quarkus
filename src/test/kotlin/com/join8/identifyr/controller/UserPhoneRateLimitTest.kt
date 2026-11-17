@@ -39,7 +39,7 @@ class UserPhoneRateLimitTest {
     private fun lookup(forwardedFor: String, path: String = "/users/phone/000000000"): HttpResponse<String> =
         client.send(
             HttpRequest.newBuilder(URI("http://localhost:$port/api/v1$path"))
-                .header("X-Forwarded-For", forwardedFor).build(),
+                .header("X-Forwarded-For", forwardedFor).header("X-Forwarded-Proto", "https").build(),
             HttpResponse.BodyHandlers.ofString()
         )
 
@@ -52,7 +52,7 @@ class UserPhoneRateLimitTest {
         assertEquals(429, blocked.statusCode())
         val body = objectMapper.readTree(blocked.body())
         assertEquals(429, body["status"].asInt())
-        assertEquals("Too Many Requests", body["error"].asText())
+        assertEquals("TOO_MANY_REQUESTS", body["error"].asText())
         assertNotNull(body["message"].asText())
         assertNotNull(blocked.headers().firstValue("Retry-After").orElse(null))
     }
@@ -76,15 +76,15 @@ class UserPhoneRateLimitTest {
     fun `el limite no afecta a otras rutas de usuarios`() {
         repeat(4) { lookup("203.0.113.5") }
 
-        // /users/{id} con un id no UUID: 400 de esa ruta, no 429
-        assertEquals(400, lookup("203.0.113.5", "/users/no-es-uuid").statusCode())
+        // /users/{id} (protegido): 401 de esa ruta, no 429
+        assertEquals(401, lookup("203.0.113.5", "/users/no-es-uuid").statusCode())
     }
 
     // Body vacío: responde 400 sin crear usuarios, pero la petición cuenta igual
     private fun register(forwardedFor: String): HttpResponse<String> =
         client.send(
             HttpRequest.newBuilder(URI("http://localhost:$port/api/v1/users/register"))
-                .header("X-Forwarded-For", forwardedFor).header("Content-Type", "application/json")
+                .header("X-Forwarded-For", forwardedFor).header("X-Forwarded-Proto", "https").header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{}")).build(),
             HttpResponse.BodyHandlers.ofString()
         )
@@ -96,7 +96,7 @@ class UserPhoneRateLimitTest {
         val blocked = register("203.0.113.6")
 
         assertEquals(429, blocked.statusCode())
-        assertEquals("Too Many Requests", objectMapper.readTree(blocked.body())["error"].asText())
+        assertEquals("TOO_MANY_REQUESTS", objectMapper.readTree(blocked.body())["error"].asText())
         assertNotNull(blocked.headers().firstValue("Retry-After").orElse(null))
         assertEquals(400, register("203.0.113.7").statusCode())
     }
@@ -120,8 +120,21 @@ class UserPhoneRateLimitTest {
     }
 
     @Test
+    fun `sin HTTPS (X-Forwarded-Proto del ingress) se rechaza con 403, salvo el health check`() {
+        fun plain(path: String) = client.send(
+            HttpRequest.newBuilder(URI("http://localhost:$port/api/v1$path")).header("X-Forwarded-For", "203.0.113.12").build(),
+            HttpResponse.BodyHandlers.ofString()
+        )
+        val rejected = plain("/users/phone/000000000")
+        assertEquals(403, rejected.statusCode())
+        assertEquals("HTTPS_REQUIRED", objectMapper.readTree(rejected.body())["error"].asText())
+        assertEquals(200, plain("/actuator/health").statusCode())
+        assertEquals(404, lookup("203.0.113.12").statusCode())
+    }
+
+    @Test
     fun `GET users register no consume el cupo del registro`() {
-        repeat(3) { assertEquals(400, lookup("203.0.113.11", "/users/register").statusCode()) }
+        repeat(3) { assertEquals(401, lookup("203.0.113.11", "/users/register").statusCode()) }
 
         assertEquals(400, register("203.0.113.11").statusCode())
     }

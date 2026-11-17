@@ -10,7 +10,10 @@ import org.hamcrest.Matchers.allOf
 import org.hamcrest.Matchers.containsString
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
+import com.join8.identifyr.support.TestTokens
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpHeaders
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.http.MediaType
@@ -34,14 +37,14 @@ class LoanRequestControllerTest {
     @Autowired lateinit var mockMvc: MockMvc
     @Autowired lateinit var userRepository: UserRepository
     @Autowired lateinit var loanRequestRepository: LoanRequestRepository
+    @Value("\${jwt.secret}") lateinit var jwtSecret: String
 
     private lateinit var userId: UUID
 
     @BeforeEach
     fun createUser() {
         userId = userRepository.save(
-            User(phone = "987654321", email = "", photoFront = "f-${UUID.randomUUID()}",
-                photoBack = "b-${UUID.randomUUID()}", passwordHash = "")
+            User(phone = "987654321")
         ).id!!
     }
 
@@ -51,8 +54,12 @@ class LoanRequestControllerTest {
         userRepository.deleteAll()
     }
 
-    private fun register(json: String): ResultActions =
-        mockMvc.perform(post("/loan-requests/register").contentType(MediaType.APPLICATION_JSON).content(json))
+    private fun bearer(id: UUID = userId, phone: String = "987654321") = "Bearer ${TestTokens.user(jwtSecret, id, phone)}"
+
+    private fun register(json: String, authorization: String? = bearer()): ResultActions = mockMvc.perform(
+        post("/loan-requests/register").contentType(MediaType.APPLICATION_JSON).content(json)
+            .apply { authorization?.let { header(HttpHeaders.AUTHORIZATION, it) } }
+    )
 
     private fun body(
         idUsuario: Any? = userId,
@@ -188,9 +195,19 @@ class LoanRequestControllerTest {
 
     @Test
     fun `idUsuario inexistente devuelve 422 y nunca 404`() {
-        register(body(idUsuario = UUID.randomUUID()))
+        val unknown = UUID.randomUUID()
+        register(body(idUsuario = unknown), bearer(unknown))
             .andExpect(status().isUnprocessableEntity)
             .andExpect(jsonPath("$.message", containsString("no existe")))
+        assertEquals(0, loanRequestRepository.count())
+    }
+
+    @Test
+    fun `sin token 401 y con idUsuario o celular de otro usuario 403`() {
+        register(body(), authorization = null).andExpect(status().isUnauthorized)
+        register(body(), bearer(id = UUID.randomUUID())).andExpect(status().isForbidden)
+        register(body(), bearer(phone = "911111111")).andExpect(status().isForbidden)
+        register(body(), "Bearer ${TestTokens.supervisor(jwtSecret)}").andExpect(status().isForbidden)
         assertEquals(0, loanRequestRepository.count())
     }
 

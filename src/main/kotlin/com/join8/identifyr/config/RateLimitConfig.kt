@@ -13,12 +13,15 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 import java.time.Clock
 import java.util.concurrent.ConcurrentHashMap
 
-/** Límites por IP de las rutas públicas que revelan si un celular existe (prefijo "rate-limit" en application.yaml). */
+/** Límites por IP de las rutas públicas (prefijo "rate-limit" en application.yaml). */
 @ConfigurationProperties(prefix = "rate-limit")
 data class RateLimitProperties(
     val phoneLookup: Limit = Limit(maxRequests = 30),
     val loanLookup: Limit = Limit(maxRequests = 30),
-    val userRegister: Limit = Limit(maxRequests = 10)
+    val userRegister: Limit = Limit(maxRequests = 10),
+    /** POST /auth/login y /auth/supervisor/login (contador compartido: misma fuerza bruta). */
+    val authLogin: Limit = Limit(maxRequests = 10),
+    val registerPassword: Limit = Limit(maxRequests = 10)
 ) {
     data class Limit(
         val maxRequests: Int,
@@ -95,5 +98,9 @@ class RateLimitConfig(
             .addPathPatterns("/loans/current/phone/*")
         registry.addInterceptor(IpRateLimitInterceptor("user-register", IpRateLimiter(props.userRegister, clock), "POST"))
             .addPathPatterns("/users/register")
+        registry.addInterceptor(IpRateLimitInterceptor("auth-login", IpRateLimiter(props.authLogin, clock), "POST"))
+            .addPathPatterns("/auth/login", "/auth/supervisor/login")
+        registry.addInterceptor(IpRateLimitInterceptor("register-password", IpRateLimiter(props.registerPassword, clock), "POST"))
+            .addPathPatterns("/auth/register-password")
     }
 }

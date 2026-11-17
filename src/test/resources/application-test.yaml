@@ -19,3 +19,18 @@ logging:
   level:
     org.hibernate.SQL: INFO
     org.hibernate.type.descriptor.sql.BasicBinder: INFO
+
+# Secreto solo para tests (en main no hay valor por defecto)
+jwt:
+  secret: test-secret-solo-para-tests-0123456789abcdef0123456789
+
+# Holgado: muchos tests de login comparten la IP 127.0.0.1 (el límite se prueba en AuthRateLimitTest)
+rate-limit:
+  phone-lookup:
+    max-requests: 100000
+  user-register:
+    max-requests: 100000
+  auth-login:
+    max-requests: 100000
+  register-password:
+    max-requests: 100000

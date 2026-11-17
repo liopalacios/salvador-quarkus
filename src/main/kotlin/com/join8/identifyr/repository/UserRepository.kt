@@ -12,6 +12,8 @@ import java.util.*
 interface UserRepository : JpaRepository<User, UUID> {
     fun existsByPhotoFront(photoFront: String): Boolean
     fun existsByPhotoBack(photoBack: String): Boolean
+    fun existsByPhotoFrontAndIdNot(photoFront: String, id: UUID): Boolean
+    fun existsByPhotoBackAndIdNot(photoBack: String, id: UUID): Boolean
     fun existsByEmail(email: String): Boolean
     fun existsByPhone(phone: String): Boolean
     fun findByEmail(email: String): User?
@@ -21,4 +23,10 @@ interface UserRepository : JpaRepository<User, UUID> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select u from User u where u.id = :id")
     fun findByIdForUpdate(id: UUID): User?
+
+    // FOR UPDATE: logins simultáneos del mismo celular no pierden incrementos del contador de fallos.
+    // Lista (no User?) por si quedaran celulares duplicados de antes de uq_users_phone: se usa el más antiguo.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from User u where u.phone = :phone order by u.createdAt asc")
+    fun findAllByPhoneForUpdate(phone: String): List<User>
 }

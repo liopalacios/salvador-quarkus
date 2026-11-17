@@ -13,181 +13,131 @@ import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 import org.springframework.web.servlet.resource.NoResourceFoundException
+import java.time.Clock
+import java.time.Duration
 import java.time.LocalDateTime
 
+/**
+ * Formato único de error: { timestamp, status, error: "<CODIGO>", message, path? }. Nunca stack traces.
+ * Los códigos son el nombre del estado HTTP (BAD_REQUEST, NOT_FOUND, ...) salvo los específicos
+ * (VALIDATION_ERROR, ACCOUNT_LOCKED, ...).
+ */
 @RestControllerAdvice
-class GlobalExceptionHandler {
+class GlobalExceptionHandler(private val clock: Clock) {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    @ExceptionHandler(IllegalArgumentException::class)
-    fun handleIllegalArgument(ex: IllegalArgumentException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse(
+    private fun error(
+        status: HttpStatus,
+        message: String,
+        code: String = status.name,
+        path: String? = null,
+        idPrestamo: java.util.UUID? = null,
+        headers: Map<String, String> = emptyMap()
+    ): ResponseEntity<ErrorResponse> {
+        val builder = ResponseEntity.status(status)
+        headers.forEach { (name, value) -> builder.header(name, value) }
+        return builder.body(
+            ErrorResponse(
                 timestamp = LocalDateTime.now(),
-                status = HttpStatus.BAD_REQUEST.value(),
-                error = "Bad Request",
-                message = ex.message ?: "Argumento inválido",
-                path = null
-            ))
+                status = status.value(),
+                error = code,
+                message = message,
+                path = path,
+                idPrestamo = idPrestamo
+            )
+        )
     }
+
+    @ExceptionHandler(IllegalArgumentException::class)
+    fun handleIllegalArgument(ex: IllegalArgumentException) =
+        error(HttpStatus.BAD_REQUEST, ex.message ?: "Argumento inválido")
 
     @ExceptionHandler(ResourceNotFoundException::class)
-    fun handleResourceNotFound(ex: ResourceNotFoundException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.NOT_FOUND)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.NOT_FOUND.value(),
-                error = "Not Found",
-                message = ex.message ?: "Recurso no encontrado",
-                path = null
-            ))
-    }
+    fun handleResourceNotFound(ex: ResourceNotFoundException) =
+        error(HttpStatus.NOT_FOUND, ex.message ?: "Recurso no encontrado")
 
     @ExceptionHandler(BusinessException::class)
-    fun handleBusiness(ex: BusinessException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.UNPROCESSABLE_ENTITY)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.UNPROCESSABLE_ENTITY.value(),
-                error = "Unprocessable Entity",
-                message = ex.message ?: "Regla de negocio incumplida",
-                path = null
-            ))
-    }
+    fun handleBusiness(ex: BusinessException) =
+        error(HttpStatus.UNPROCESSABLE_ENTITY, ex.message ?: "Regla de negocio incumplida")
 
     @ExceptionHandler(ConflictException::class)
-    fun handleConflict(ex: ConflictException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.CONFLICT)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.CONFLICT.value(),
-                error = "Conflict",
-                message = ex.message ?: "Conflicto",
-                path = null,
-                idPrestamo = ex.idPrestamo
-            ))
+    fun handleConflict(ex: ConflictException) =
+        error(HttpStatus.CONFLICT, ex.message ?: "Conflicto", idPrestamo = ex.idPrestamo)
+
+    @ExceptionHandler(ForbiddenException::class)
+    fun handleForbidden(ex: ForbiddenException) =
+        error(HttpStatus.FORBIDDEN, ex.message ?: "Acceso denegado", code = ex.code)
+
+    @ExceptionHandler(InvalidCredentialsException::class)
+    fun handleInvalidCredentials(ex: InvalidCredentialsException) =
+        error(HttpStatus.UNAUTHORIZED, ex.message!!, code = "INVALID_CREDENTIALS")
+
+    @ExceptionHandler(AccountLockedException::class)
+    fun handleLocked(ex: AccountLockedException): ResponseEntity<ErrorResponse> {
+        val seconds = Duration.between(clock.instant(), ex.lockedUntil).seconds.coerceAtLeast(1)
+        return error(
+            HttpStatus.LOCKED, ex.message!!, code = "ACCOUNT_LOCKED",
+            headers = mapOf(HttpHeaders.RETRY_AFTER to seconds.toString())
+        )
     }
+
+    @ExceptionHandler(NotImplementedException::class)
+    fun handleNotImplemented(ex: NotImplementedException) =
+        error(HttpStatus.NOT_IMPLEMENTED, ex.message ?: "No disponible")
 
     @ExceptionHandler(RateLimitExceededException::class)
-    fun handleRateLimit(ex: RateLimitExceededException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.TOO_MANY_REQUESTS)
-            .header(HttpHeaders.RETRY_AFTER, ex.retryAfterSeconds.toString())
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.TOO_MANY_REQUESTS.value(),
-                error = "Too Many Requests",
-                message = "Demasiadas solicitudes, intenta nuevamente más tarde",
-                path = null
-            ))
-    }
+    fun handleRateLimit(ex: RateLimitExceededException) = error(
+        HttpStatus.TOO_MANY_REQUESTS, "Demasiadas solicitudes, intenta nuevamente más tarde",
+        headers = mapOf(HttpHeaders.RETRY_AFTER to ex.retryAfterSeconds.toString())
+    )
 
     @ExceptionHandler(IllegalStateException::class)
-    fun handleIllegalState(ex: IllegalStateException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.CONFLICT)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.CONFLICT.value(),
-                error = "Conflict",
-                message = ex.message ?: "Estado inválido",
-                path = null
-            ))
-    }
+    fun handleIllegalState(ex: IllegalStateException) =
+        error(HttpStatus.CONFLICT, ex.message ?: "Estado inválido")
 
+    // Solo field + mensaje de la anotación: nunca el valor rechazado (podría ser la contraseña)
     @ExceptionHandler(MethodArgumentNotValidException::class)
     fun handleValidation(ex: MethodArgumentNotValidException): ResponseEntity<ErrorResponse> {
         val errors = ex.bindingResult.allErrors.joinToString(", ") { error ->
             (if (error is FieldError) "${error.field}: ${error.defaultMessage}" else error.defaultMessage).toString()
         }
-        return ResponseEntity
-            .status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.BAD_REQUEST.value(),
-                error = "Validation Error",
-                message = errors,
-                path = null
-            ))
+        return error(HttpStatus.BAD_REQUEST, errors, code = "VALIDATION_ERROR")
     }
 
     // JSON mal formado o sin un campo obligatorio (Kotlin no admite null en campos no opcionales)
     @ExceptionHandler(HttpMessageNotReadableException::class)
     fun handleNotReadable(ex: HttpMessageNotReadableException): ResponseEntity<ErrorResponse> {
         val field = (ex.cause as? MismatchedInputException)?.path?.joinToString(".") { it.fieldName ?: "[${it.index}]" }
-        return ResponseEntity
-            .status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.BAD_REQUEST.value(),
-                error = "Bad Request",
-                message = if (field.isNullOrBlank()) "Cuerpo JSON inválido" else "Falta o es inválido el campo: $field",
-                path = null
-            ))
+        return error(
+            HttpStatus.BAD_REQUEST,
+            if (field.isNullOrBlank()) "Cuerpo JSON inválido" else "Falta o es inválido el campo: $field"
+        )
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException::class)
-    fun handleTypeMismatch(ex: MethodArgumentTypeMismatchException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.BAD_REQUEST.value(),
-                error = "Bad Request",
-                message = "Valor inválido para ${ex.name}: ${ex.value}",
-                path = null
-            ))
-    }
+    fun handleTypeMismatch(ex: MethodArgumentTypeMismatchException) =
+        error(HttpStatus.BAD_REQUEST, "Valor inválido para ${ex.name}: ${ex.value}")
 
     @ExceptionHandler(NoResourceFoundException::class)
-    fun handleNotFound(ex: NoResourceFoundException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.NOT_FOUND)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.NOT_FOUND.value(),
-                error = "Not Found",
-                message = "Ruta no encontrada",
-                path = "/${ex.resourcePath}"
-            ))
-    }
+    fun handleNotFound(ex: NoResourceFoundException) =
+        error(HttpStatus.NOT_FOUND, "Ruta no encontrada", path = "/${ex.resourcePath}")
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException::class)
-    fun handleMethodNotSupported(ex: HttpRequestMethodNotSupportedException): ResponseEntity<ErrorResponse> {
-        return ResponseEntity
-            .status(HttpStatus.METHOD_NOT_ALLOWED)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.METHOD_NOT_ALLOWED.value(),
-                error = "Method Not Allowed",
-                message = "Método ${ex.method} no permitido",
-                path = null
-            ))
-    }
+    fun handleMethodNotSupported(ex: HttpRequestMethodNotSupportedException) =
+        error(HttpStatus.METHOD_NOT_ALLOWED, "Método ${ex.method} no permitido")
 
     @ExceptionHandler(Exception::class)
     fun handleGeneric(ex: Exception): ResponseEntity<ErrorResponse> {
         log.error("Error no controlado", ex)
-        return ResponseEntity
-            .status(HttpStatus.INTERNAL_SERVER_ERROR)
-            .body(ErrorResponse(
-                timestamp = LocalDateTime.now(),
-                status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                error = "Internal Server Error",
-                message = "Ocurrió un error inesperado",
-                path = null
-            ))
+        return error(HttpStatus.INTERNAL_SERVER_ERROR, "Ocurrió un error inesperado")
     }
 }
 
 data class ErrorResponse(
     val timestamp: LocalDateTime,
     val status: Int,
+    /** Código de error estable para la app (UNAUTHORIZED, FORBIDDEN, ACCOUNT_LOCKED, BAD_REQUEST, ...). */
     val error: String,
     val message: String,
     val path: String?,

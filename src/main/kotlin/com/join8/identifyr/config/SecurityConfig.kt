@@ -1,63 +1,98 @@
 package com.join8.identifyr.config
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.join8.identifyr.security.*
+import com.nimbusds.jose.jwk.source.ImmutableSecret
+import com.nimbusds.jose.proc.SecurityContext
+import jakarta.servlet.DispatcherType
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpMethod
-import org.springframework.security.authorization.AuthenticatedAuthorizationManager
-import org.springframework.security.authorization.AuthorityAuthorizationManager
-import org.springframework.security.authorization.AuthorizationManager
-import org.springframework.security.authorization.AuthorizationManagers
-import org.springframework.security.oauth2.server.resource.web.BearerTokenResolver
-import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver
-import org.springframework.security.web.access.intercept.RequestAuthorizationContext
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
+import org.springframework.security.config.http.SessionCreationPolicy
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm
-import org.springframework.security.oauth2.jwt.JwtDecoder
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter
-import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter
+import org.springframework.security.oauth2.jwt.*
+import org.springframework.security.oauth2.server.resource.web.BearerTokenResolver
+import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver
 import org.springframework.security.web.SecurityFilterChain
+import org.springframework.security.web.access.channel.ChannelProcessingFilter
+import org.springframework.security.web.util.matcher.AntPathRequestMatcher
+import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
+/**
+ * Autenticación JWT (Bearer) para TODOS los métodos HTTP, salvo la lista blanca pública de [PUBLIC_ENDPOINTS].
+ * Token ausente/inválido/vencido -> 401 { "error": "UNAUTHORIZED" }; sin el rol requerido -> 403.
+ * La autorización por recurso (dueño del recurso) se hace en los controladores con [AccessGuard].
+ */
 @Configuration
 @EnableWebSecurity
 class SecurityConfig {
 
     companion object {
         const val ROLE_SUPERVISOR = "SUPERVISOR"
+        const val MIN_SECRET_BYTES = 32 // HS256: clave de al menos 256 bits
+
+        /** Rutas públicas (relativas al context-path /api/v1). */
+        val PUBLIC_ENDPOINTS: List<Pair<HttpMethod, String>> = listOf(
+            HttpMethod.GET to "/users/phone/*",
+            HttpMethod.POST to "/users/register",
+            HttpMethod.POST to "/auth/register-password",
+            HttpMethod.POST to "/auth/login",
+            HttpMethod.POST to "/auth/supervisor/login",
+            HttpMethod.POST to "/auth/otp/send",
+            HttpMethod.POST to "/auth/otp/verify",
+            HttpMethod.GET to "/actuator/health",
+            HttpMethod.GET to "/actuator/health/**",
+            HttpMethod.GET to "/api-docs/**",
+            HttpMethod.GET to "/swagger-ui/**",
+            HttpMethod.GET to "/swagger-ui.html"
+        )
     }
 
+    // Costo explícito (≥ 10). BCrypt compara en tiempo constante.
     @Bean
-    fun passwordEncoder(): BCryptPasswordEncoder = BCryptPasswordEncoder()
+    fun passwordEncoder(): BCryptPasswordEncoder = BCryptPasswordEncoder(10)
 
-    /**
-     * Tokens Bearer JWT firmados con HS256; la clave son los bytes UTF-8 de jwt.secret (JWT_SECRET).
-     * Los roles van en el claim "roles" (ej. ["SUPERVISOR"]) y se mapean a ROLE_SUPERVISOR.
-     */
+    /** Clave HS256: bytes UTF-8 de jwt.secret (JWT_SECRET, desde Key Vault). Falla el arranque si es corta. */
     @Bean
-    fun jwtDecoder(@Value("\${jwt.secret}") secret: String): JwtDecoder =
-        NimbusJwtDecoder.withSecretKey(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-            .macAlgorithm(MacAlgorithm.HS256)
-            .build()
-
-    private fun jwtAuthenticationConverter() = JwtAuthenticationConverter().apply {
-        setJwtGrantedAuthoritiesConverter(JwtGrantedAuthoritiesConverter().apply {
-            setAuthoritiesClaimName("roles")
-            setAuthorityPrefix("ROLE_")
-        })
+    fun jwtSecretKey(@Value("\${jwt.secret}") secret: String): SecretKey {
+        val bytes = secret.toByteArray(Charsets.UTF_8)
+        require(bytes.size >= MIN_SECRET_BYTES) { "jwt.secret debe tener al menos $MIN_SECRET_BYTES bytes (256 bits)" }
+        return SecretKeySpec(bytes, "HmacSHA256")
     }
 
+    /** Valida firma HS256, exp/nbf (60 s de tolerancia) y que exista "sub". */
+    @Bean
+    fun jwtDecoder(jwtSecretKey: SecretKey): JwtDecoder =
+        NimbusJwtDecoder.withSecretKey(jwtSecretKey).macAlgorithm(MacAlgorithm.HS256).build().apply {
+            setJwtValidator(
+                DelegatingOAuth2TokenValidator(
+                    JwtValidators.createDefault(),
+                    JwtClaimValidator<Any?>(JwtClaimNames.SUB) { it is String && it.isNotBlank() }
+                )
+            )
+        }
+
+    @Bean
+    fun jwtEncoder(jwtSecretKey: SecretKey): JwtEncoder = NimbusJwtEncoder(ImmutableSecret<SecurityContext>(jwtSecretKey))
+
     /**
-     * Header Authorization sin token ("Bearer", "Bearer   ", "Bearer null") = sin token: la petición
-     * sigue como anónima en vez de 401. Un token presente se valida siempre (inválido o vencido -> 401).
+     * - En las rutas públicas el header Authorization se ignora: un token viejo o vencido que la app
+     *   todavía envíe no debe bloquear el login ni la consulta de celular.
+     * - Header sin token ("Bearer", "Bearer   ", "Bearer null") = sin token: en las rutas protegidas
+     *   termina en 401 igual que sin header.
      */
     private fun bearerTokenResolver(): BearerTokenResolver {
         val delegate = DefaultBearerTokenResolver()
+        val publicMatchers = PUBLIC_ENDPOINTS.map { (method, path) -> AntPathRequestMatcher(path, method.name()) }
         return BearerTokenResolver { request ->
+            if (publicMatchers.any { it.matches(request) }) return@BearerTokenResolver null
             val header = request.getHeader(HttpHeaders.AUTHORIZATION)?.trim()
             val token = header?.takeIf { it.startsWith("bearer", ignoreCase = true) }?.substring(6)?.trim()
             if (token != null && (token.isEmpty() || token.equals("null", ignoreCase = true))) null
@@ -65,55 +100,46 @@ class SecurityConfig {
         }
     }
 
-    /**
-     * Endpoints del supervisor. Con allowAnonymous=true (temporal, mientras la app no tenga login de
-     * supervisor) se permite sin token; con token, igual se exige el rol SUPERVISOR.
-     */
-    private fun supervisorAccess(allowAnonymous: Boolean): AuthorizationManager<RequestAuthorizationContext> {
-        val supervisor = AuthorityAuthorizationManager.hasRole<RequestAuthorizationContext>(ROLE_SUPERVISOR)
-        return if (allowAnonymous) AuthorizationManagers.anyOf(AuthenticatedAuthorizationManager.anonymous(), supervisor)
-        else supervisor
-    }
-
     @Bean
     fun securityFilterChain(
         http: HttpSecurity,
-        @Value("\${security.supervisor.allow-anonymous:false}") allowAnonymousSupervisor: Boolean
+        objectMapper: ObjectMapper,
+        @Value("\${security.require-https:false}") requireHttps: Boolean
     ): SecurityFilterChain {
+        val errorWriter = SecurityErrorWriter(objectMapper)
+        val entryPoint = JsonAuthenticationEntryPoint(errorWriter)
+        val accessDenied = JsonAccessDeniedHandler(errorWriter)
+
+        if (requireHttps) http.addFilterBefore(HttpsEnforcementFilter(errorWriter), ChannelProcessingFilter::class.java)
+
         return http
-            .csrf{ it.disable() }
-            .cors{ }
+            .csrf { it.disable() }
+            .cors { }
+            .httpBasic { it.disable() }
+            .formLogin { it.disable() }
+            .logout { it.disable() }
+            .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .authorizeHttpRequests { auth ->
+                // El reenvío interno a /error no debe convertir un 4xx/5xx en 401
+                auth.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                PUBLIC_ENDPOINTS.forEach { (method, path) -> auth.requestMatchers(method, path).permitAll() }
                 auth
-                    // Registro de solicitudes: lo usa la app del cliente, sin token
-                    .requestMatchers(HttpMethod.POST, "/loan-requests/register").permitAll()
-                    // Consulta de solicitudes: expone celulares, solo supervisor (ver supervisorAccess)
-                    .requestMatchers(HttpMethod.GET, "/loan-requests", "/loan-requests/**")
-                    .access(supervisorAccess(allowAnonymousSupervisor))
-                    // Registro de préstamos (desembolso): solo supervisor
-                    .requestMatchers(HttpMethod.POST, "/loans/register")
-                    .access(supervisorAccess(allowAnonymousSupervisor))
-                    // Préstamo/solicitud actual por celular: app del cliente, sin token (con rate limit)
-                    .requestMatchers(HttpMethod.GET, "/loans/current/phone/*").permitAll()
-                    .requestMatchers(
-                        "/users/register",
-                        "/users/**",
-                        "/context/**",
-                        "/stability/**",
-                        "/scores/**",
-                        "/questionnaires/**",
-                        "/actuator/health",
-                        "/api-docs/**",
-                        "/swagger-ui/**",
-                        "/swagger-ui.html"
-                    ).permitAll()
+                    // Solo supervisor
+                    .requestMatchers(HttpMethod.GET, "/loan-requests", "/loan-requests/**").hasRole(ROLE_SUPERVISOR)
+                    .requestMatchers(HttpMethod.POST, "/loans/register").hasRole(ROLE_SUPERVISOR)
+                    // Todo lo demás (GET, POST, PUT, DELETE, ...): token válido; el dueño se valida en el controlador
                     .anyRequest().authenticated()
             }
             .oauth2ResourceServer {
                 it.bearerTokenResolver(bearerTokenResolver())
-                it.jwt { jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()) }
+                it.authenticationEntryPoint(entryPoint)
+                it.accessDeniedHandler(accessDenied)
+                it.jwt { jwt -> jwt.jwtAuthenticationConverter(JwtClaimsConverter()) }
             }
-            .httpBasic{ it.disable() }
+            .exceptionHandling {
+                it.authenticationEntryPoint(entryPoint)
+                it.accessDeniedHandler(accessDenied)
+            }
             .build()
     }
 }

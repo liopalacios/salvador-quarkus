@@ -6,7 +6,10 @@ import com.join8.identifyr.repository.UserRepository
 import org.hamcrest.Matchers.hasItem
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
+import com.join8.identifyr.support.TestTokens
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpHeaders
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.http.MediaType
@@ -29,14 +32,14 @@ class QuestionnaireControllerTest {
     @Autowired lateinit var mockMvc: MockMvc
     @Autowired lateinit var userRepository: UserRepository
     @Autowired lateinit var questionnaireRepository: QuestionnaireRepository
+    @Value("\${jwt.secret}") lateinit var jwtSecret: String
 
     private lateinit var userId: UUID
 
     @BeforeEach
     fun createUser() {
         userId = userRepository.save(
-            User(phone = "987654321", email = "", photoFront = "f-${UUID.randomUUID()}",
-                photoBack = "b-${UUID.randomUUID()}", passwordHash = "")
+            User(phone = "987654321")
         ).id!!
     }
 
@@ -46,8 +49,15 @@ class QuestionnaireControllerTest {
         userRepository.deleteAll()
     }
 
-    private fun register(json: String): ResultActions =
-        mockMvc.perform(post("/questionnaires/register").contentType(MediaType.APPLICATION_JSON).content(json))
+    private fun bearer(id: UUID = userId) = "Bearer ${TestTokens.user(jwtSecret, id, "987654321")}"
+
+    private fun register(json: String, authorization: String = bearer()): ResultActions = mockMvc.perform(
+        post("/questionnaires/register").contentType(MediaType.APPLICATION_JSON).content(json)
+            .header(HttpHeaders.AUTHORIZATION, authorization)
+    )
+
+    private fun score(id: UUID, authorization: String = bearer()): ResultActions =
+        mockMvc.perform(get("/scores/$id").header(HttpHeaders.AUTHORIZATION, authorization))
 
     private val block1 get() = """
         {"userId":"$userId","employmentType":"1h","employmentTenure":"2a",
@@ -64,7 +74,7 @@ class QuestionnaireControllerTest {
             .andExpect(jsonPath("$.createdAt").isString)
 
         // 35*.21 + 0 + 0 + 85*.105 + 100*.14 = 30.275 -> 30
-        mockMvc.perform(get("/scores/$userId"))
+        score(userId)
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.scoreValue").value(30))
             .andExpect(jsonPath("$.levelName").value("PLATA"))
@@ -76,7 +86,7 @@ class QuestionnaireControllerTest {
             .andExpect(jsonPath("$.status").value("A"))
 
         // 30.275 + (5 + 4 + 10) * 0.3 = 30.275 + 5.7 = 35.975 -> 36
-        mockMvc.perform(get("/scores/$userId"))
+        score(userId)
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.scoreValue").value(36))
             .andExpect(jsonPath("$.levelName").value("PLATA"))
@@ -89,7 +99,6 @@ class QuestionnaireControllerTest {
     fun `validaciones devuelven 400`() {
         val invalid = listOf(
             """{"employmentType":"1h"}""",                                           // sin userId
-            """{"userId":"no-es-uuid","email":"a@b.com"}""",                          // userId mal formado
             """{"userId":"$userId"}""",                                               // solo userId
             """{"userId":"$userId","email":"  "}""",                                  // solo campos vacíos
             """{"userId":"$userId","employmentType":"1h"}""",                         // primer registro incompleto
@@ -102,6 +111,8 @@ class QuestionnaireControllerTest {
         invalid.forEach { json ->
             register(json).andExpect(status().isBadRequest)
         }
+        // userId mal formado: no es el del token
+        register("""{"userId":"no-es-uuid","email":"a@b.com"}""").andExpect(status().isForbidden)
         assertEquals(0, questionnaireRepository.count())
     }
 
@@ -115,13 +126,32 @@ class QuestionnaireControllerTest {
 
     @Test
     fun `usuario inexistente devuelve 404 en registro y en score`() {
+        // Token válido de un usuario que ya no existe
         val unknown = UUID.randomUUID()
-        register(block1.replace(userId.toString(), unknown.toString())).andExpect(status().isNotFound)
-        mockMvc.perform(get("/scores/$unknown")).andExpect(status().isNotFound)
+        register(block1.replace(userId.toString(), unknown.toString()), bearer(unknown)).andExpect(status().isNotFound)
+        score(unknown, bearer(unknown)).andExpect(status().isNotFound)
+    }
+
+    @Test
+    fun `userId del body o de la ruta distinto al del token devuelve 403`() {
+        val other = UUID.randomUUID()
+        register(block1, bearer(other))
+            .andExpect(status().isForbidden)
+            .andExpect(jsonPath("$.error").value("FORBIDDEN"))
+        score(userId, bearer(other)).andExpect(status().isForbidden)
+        assertEquals(0, questionnaireRepository.count())
+    }
+
+    @Test
+    fun `sin token devuelve 401`() {
+        mockMvc.perform(post("/questionnaires/register").contentType(MediaType.APPLICATION_JSON).content(block1))
+            .andExpect(status().isUnauthorized)
+            .andExpect(jsonPath("$.error").value("UNAUTHORIZED"))
+        mockMvc.perform(get("/scores/$userId")).andExpect(status().isUnauthorized)
     }
 
     @Test
     fun `score sin registro activo devuelve 404`() {
-        mockMvc.perform(get("/scores/$userId")).andExpect(status().isNotFound)
+        score(userId).andExpect(status().isNotFound)
     }
 }
