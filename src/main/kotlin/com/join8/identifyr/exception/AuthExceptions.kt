@@ -9,7 +9,7 @@ class ForbiddenException(message: String, val code: String = "FORBIDDEN") : Runt
  * Celular inexistente o contraseña incorrecta: mismo 401 y mismo mensaje en ambos casos
  * (no revela si el celular existe).
  */
-class InvalidCredentialsException : RuntimeException("Celular o contraseña incorrectos")
+class InvalidCredentialsException(message: String = "Celular o contraseña incorrectos") : RuntimeException(message)
 
 /** Login bloqueado por intentos fallidos. Se traduce a 423 con Retry-After. */
 class AccountLockedException(val lockedUntil: Instant) :

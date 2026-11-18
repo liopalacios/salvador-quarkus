@@ -5,9 +5,11 @@ import com.join8.identifyr.model.dto.request.LoginRequest
 import com.join8.identifyr.model.dto.request.OtpSendRequest
 import com.join8.identifyr.model.dto.request.OtpVerifyRequest
 import com.join8.identifyr.model.dto.request.RegisterPasswordRequest
+import com.join8.identifyr.model.dto.request.StaffLoginRequest
 import com.join8.identifyr.model.dto.response.AuthTokenResponse
 import com.join8.identifyr.model.entity.Role
 import com.join8.identifyr.service.AuthService
+import com.join8.identifyr.service.StaffAuthService
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
@@ -20,7 +22,10 @@ import org.springframework.web.bind.annotation.*
  */
 @RestController
 @RequestMapping("/auth")
-class AuthController(private val authService: AuthService) {
+class AuthController(
+    private val authService: AuthService,
+    private val staffAuthService: StaffAuthService
+) {
 
     // 201 token · 400 formato · 403 plazo vencido · 404 usuario inexistente · 409 ya tiene contraseña
     @PostMapping("/register-password")
@@ -39,6 +44,11 @@ class AuthController(private val authService: AuthService) {
     @PostMapping("/supervisor/login")
     fun supervisorLogin(@Valid @RequestBody request: LoginRequest, http: HttpServletRequest): ResponseEntity<AuthTokenResponse> =
         ResponseEntity.ok(authService.login(request, http.remoteAddr, requiredRole = Role.SUPERVISOR))
+
+    // Personal interno (tabla staff_users): usuario + contraseña fuerte. 200 token · 400 formato · 401 · 423
+    @PostMapping("/staff/login")
+    fun staffLogin(@Valid @RequestBody request: StaffLoginRequest, http: HttpServletRequest): ResponseEntity<AuthTokenResponse> =
+        ResponseEntity.ok(staffAuthService.login(request, http.remoteAddr))
 
     // --- Siguiente fase: OTP validado en el backend (hoy lo valida la app). Contrato reservado, responde 501. ---
 

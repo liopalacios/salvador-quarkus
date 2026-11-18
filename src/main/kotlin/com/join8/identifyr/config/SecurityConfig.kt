@@ -45,6 +45,7 @@ class SecurityConfig {
             HttpMethod.POST to "/auth/register-password",
             HttpMethod.POST to "/auth/login",
             HttpMethod.POST to "/auth/supervisor/login",
+            HttpMethod.POST to "/auth/staff/login",
             HttpMethod.POST to "/auth/otp/send",
             HttpMethod.POST to "/auth/otp/verify",
             HttpMethod.GET to "/actuator/health",

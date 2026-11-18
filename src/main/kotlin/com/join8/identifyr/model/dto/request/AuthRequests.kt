@@ -2,6 +2,7 @@ package com.join8.identifyr.model.dto.request
 
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
+import jakarta.validation.constraints.Size
 
 const val PHONE_REGEX = "^\\d{9}$"
 const val PASSWORD_REGEX = "^\\d{4}$"
@@ -33,6 +34,20 @@ data class LoginRequest(
     val password: String? = null
 ) {
     override fun toString() = "LoginRequest(phone=***)"
+}
+
+/** POST /auth/staff/login: usuario + contraseña fuerte del personal interno (supervisor). */
+data class StaffLoginRequest(
+    @field:NotBlank(message = "es obligatorio")
+    @field:Size(max = 50, message = "no puede tener más de 50 caracteres")
+    val username: String? = null,
+
+    // BCrypt solo usa los primeros 72 bytes
+    @field:NotBlank(message = "es obligatoria")
+    @field:Size(max = 72, message = "no puede tener más de 72 caracteres")
+    val password: String? = null
+) {
+    override fun toString() = "StaffLoginRequest(username=***)"
 }
 
 /** POST /auth/otp/send (siguiente fase) */

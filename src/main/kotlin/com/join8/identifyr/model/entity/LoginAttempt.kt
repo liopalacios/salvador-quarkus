@@ -6,7 +6,7 @@ import java.util.*
 
 /**
  * Auditoría de intentos de autenticación (tabla application_attempts de V1). Nunca guarda la contraseña.
- * [failureReason]: UNKNOWN_PHONE, BAD_PASSWORD, NO_PASSWORD, LOCKED, LOCKED_NOW, NOT_SUPERVISOR; null si fue exitoso.
+ * [failureReason]: UNKNOWN_PHONE, UNKNOWN_USERNAME, DISABLED, BAD_PASSWORD, NO_PASSWORD, LOCKED, LOCKED_NOW, NOT_SUPERVISOR; null si fue exitoso.
  */
 @Entity
 @Table(name = "application_attempts")
@@ -21,6 +21,13 @@ class LoginAttempt(
 
     @Column(name = "phone", length = 9, updatable = false)
     val phone: String?,
+
+    /** Login del personal (STAFF_LOGIN): usuario ingresado y su id en staff_users. */
+    @Column(name = "username", length = 50, updatable = false)
+    val username: String? = null,
+
+    @Column(name = "staff_user_id", updatable = false)
+    val staffUserId: UUID? = null,
 
     @Column(name = "ip_address", length = 45, updatable = false)
     val ipAddress: String?,
@@ -40,5 +47,6 @@ class LoginAttempt(
     companion object {
         const val TYPE_LOGIN = "LOGIN"
         const val TYPE_REGISTRATION = "REGISTRATION"
+        const val TYPE_STAFF_LOGIN = "STAFF_LOGIN"
     }
 }

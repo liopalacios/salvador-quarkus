@@ -19,7 +19,7 @@ data class RateLimitProperties(
     val phoneLookup: Limit = Limit(maxRequests = 30),
     val loanLookup: Limit = Limit(maxRequests = 30),
     val userRegister: Limit = Limit(maxRequests = 10),
-    /** POST /auth/login y /auth/supervisor/login (contador compartido: misma fuerza bruta). */
+    /** POST /auth/login, /auth/supervisor/login y /auth/staff/login (contador compartido: misma fuerza bruta). */
     val authLogin: Limit = Limit(maxRequests = 10),
     val registerPassword: Limit = Limit(maxRequests = 10)
 ) {
@@ -99,7 +99,7 @@ class RateLimitConfig(
         registry.addInterceptor(IpRateLimitInterceptor("user-register", IpRateLimiter(props.userRegister, clock), "POST"))
             .addPathPatterns("/users/register")
         registry.addInterceptor(IpRateLimitInterceptor("auth-login", IpRateLimiter(props.authLogin, clock), "POST"))
-            .addPathPatterns("/auth/login", "/auth/supervisor/login")
+            .addPathPatterns("/auth/login", "/auth/supervisor/login", "/auth/staff/login")
         registry.addInterceptor(IpRateLimitInterceptor("register-password", IpRateLimiter(props.registerPassword, clock), "POST"))
             .addPathPatterns("/auth/register-password")
     }

@@ -37,6 +37,14 @@ class AuthRateLimitTest {
     }
 
     @Test
+    fun `staff login comparte el cupo de login`() {
+        val body = """{"phone":"900000000","password":"1234"}"""
+        repeat(3) { post("/auth/login", body, "198.51.100.4").andExpect(status().isUnauthorized) }
+        post("/auth/staff/login", """{"username":"nadie","password":"x"}""", "198.51.100.4")
+            .andExpect(status().isTooManyRequests)
+    }
+
+    @Test
     fun `register-password al exceder el limite devuelve 429`() {
         val body = """{"userId":"${UUID.randomUUID()}","password":"1234"}"""
         repeat(3) { post("/auth/register-password", body, "198.51.100.3").andExpect(status().isNotFound) }
