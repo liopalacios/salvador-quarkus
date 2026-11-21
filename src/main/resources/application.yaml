@@ -38,6 +38,12 @@ spring:
     table: flyway_schema_history
     validate-on-migrate: true
 
+  # === SUBIDA DE ARCHIVOS (fotos del DNI: 2 imágenes de hasta 5 MB) ===
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 11MB
+
   # === JACKSON ===
   jackson:
     serialization:

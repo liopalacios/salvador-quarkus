@@ -7,17 +7,23 @@ import com.join8.identifyr.model.dto.response.PhoneExistsResponse
 import com.join8.identifyr.model.dto.response.UserRegisterResponse
 import com.join8.identifyr.security.AccessGuard
 import com.join8.identifyr.security.AuthenticatedUser
+import com.join8.identifyr.service.DniPhotoService
 import com.join8.identifyr.service.UserService
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
+import org.springframework.web.multipart.MultipartFile
 import java.util.*
 
 @RestController
 @RequestMapping("/users")
-class UserController(private val userService: UserService) {
+class UserController(
+    private val userService: UserService,
+    private val dniPhotoService: DniPhotoService
+) {
 
     // Público. 201 · 400 formato · 409 celular ya registrado
     @PostMapping("/register")
@@ -55,6 +61,22 @@ class UserController(private val userService: UserService) {
                 isVerified = user.isVerified
             )
         )
+    }
+
+    /**
+     * Protegido: solo el propio usuario. Multipart con las partes "front" y "back" (JPEG o PNG, máx. 5 MB cada una).
+     * Guarda las imágenes, reemplaza las anteriores y devuelve sus ids, ya escritos en el usuario.
+     * 200 · 400 archivo vacío, falta una parte o no es imagen · 403 · 404 · 413 demasiado grande
+     */
+    @PostMapping("/{userId}/dni-photos", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
+    fun uploadDniPhotos(
+        @PathVariable userId: UUID,
+        @RequestPart("front") front: MultipartFile,
+        @RequestPart("back") back: MultipartFile,
+        @AuthenticationPrincipal auth: AuthenticatedUser
+    ): ResponseEntity<DniPhotosResponse> {
+        AccessGuard.requireOwner(auth, userId)
+        return ResponseEntity.ok(dniPhotoService.upload(userId, front, back))
     }
 
     // Protegido: solo el propio usuario. 200 · 400 · 403 · 404 · 409 foto usada por otro usuario

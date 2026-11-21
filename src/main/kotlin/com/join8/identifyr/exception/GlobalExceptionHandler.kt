@@ -12,6 +12,10 @@ import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
+import org.springframework.web.multipart.MaxUploadSizeExceededException
+import org.springframework.web.multipart.MultipartException
+import org.springframework.web.multipart.support.MissingServletRequestPartException
+import org.springframework.web.HttpMediaTypeNotSupportedException
 import org.springframework.web.servlet.resource.NoResourceFoundException
 import java.time.Clock
 import java.time.Duration
@@ -118,6 +122,23 @@ class GlobalExceptionHandler(private val clock: Clock) {
     @ExceptionHandler(MethodArgumentTypeMismatchException::class)
     fun handleTypeMismatch(ex: MethodArgumentTypeMismatchException) =
         error(HttpStatus.BAD_REQUEST, "Valor inválido para ${ex.name}: ${ex.value}")
+
+    @ExceptionHandler(MissingServletRequestPartException::class)
+    fun handleMissingPart(ex: MissingServletRequestPartException) =
+        error(HttpStatus.BAD_REQUEST, "Falta la parte '${ex.requestPartName}' del formulario")
+
+    @ExceptionHandler(MaxUploadSizeExceededException::class)
+    fun handleMaxUpload(ex: MaxUploadSizeExceededException) =
+        error(HttpStatus.PAYLOAD_TOO_LARGE, "El archivo supera el tamaño máximo permitido")
+
+    // Va después de MaxUploadSizeExceededException (que es una subclase): multipart mal formado
+    @ExceptionHandler(MultipartException::class)
+    fun handleMultipart(ex: MultipartException) =
+        error(HttpStatus.BAD_REQUEST, "Formulario multipart inválido")
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException::class)
+    fun handleMediaType(ex: HttpMediaTypeNotSupportedException) =
+        error(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Tipo de contenido no soportado: ${ex.contentType}")
 
     @ExceptionHandler(NoResourceFoundException::class)
     fun handleNotFound(ex: NoResourceFoundException) =
