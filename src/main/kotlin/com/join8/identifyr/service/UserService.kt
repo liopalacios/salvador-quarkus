@@ -5,6 +5,7 @@ import com.join8.identifyr.exception.ResourceNotFoundException
 import com.join8.identifyr.model.dto.request.DniPhotosRequest
 import com.join8.identifyr.model.dto.request.UserRegisterRequest
 import com.join8.identifyr.model.dto.response.DniPhotosResponse
+import com.join8.identifyr.model.dto.response.UserNotificationResponse
 import com.join8.identifyr.model.dto.response.UserRegisterResponse
 import com.join8.identifyr.model.entity.User
 import com.join8.identifyr.repository.UserRepository
@@ -89,6 +90,26 @@ class UserService(
     }
 
     private fun maskPhone(phone: String) = "${phone.take(3)}***${phone.takeLast(3)}"
+
+    /**
+     * Notificaciones pendientes del usuario, calculadas a partir de sus datos (no hay tabla de notificaciones).
+     * Hoy: fotos del DNI sin subir (la subida falló durante el registro). Usuario inexistente -> 404.
+     */
+    @Transactional(readOnly = true)
+    fun notifications(userId: UUID): List<UserNotificationResponse> {
+        val user = userRepository.findById(userId).orElseThrow { ResourceNotFoundException("El usuario no existe") }
+        return buildList {
+            if (user.photoFront.isNullOrBlank() || user.photoBack.isNullOrBlank()) {
+                add(
+                    UserNotificationResponse(
+                        type = UserNotificationResponse.TYPE_DNI_PHOTOS_PENDING,
+                        title = "Sube las fotos de tu DNI",
+                        message = "No pudimos guardar las fotos de tu DNI. Tómalas de nuevo para completar tu perfil."
+                    )
+                )
+            }
+        }
+    }
 
     fun findByEmail(email: String): User? = userRepository.findByEmail(email)
     fun existsById(id: UUID): Boolean = userRepository.existsById(id)

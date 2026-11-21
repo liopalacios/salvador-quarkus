@@ -4,6 +4,7 @@ import com.join8.identifyr.model.dto.request.DniPhotosRequest
 import com.join8.identifyr.model.dto.request.UserRegisterRequest
 import com.join8.identifyr.model.dto.response.DniPhotosResponse
 import com.join8.identifyr.model.dto.response.PhoneExistsResponse
+import com.join8.identifyr.model.dto.response.UserNotificationResponse
 import com.join8.identifyr.model.dto.response.UserRegisterResponse
 import com.join8.identifyr.security.AccessGuard
 import com.join8.identifyr.security.AuthenticatedUser
@@ -61,6 +62,16 @@ class UserController(
                 isVerified = user.isVerified
             )
         )
+    }
+
+    // Protegido: solo el propio usuario. 200 con la lista (vacía si no hay nada pendiente) · 403 · 404
+    @GetMapping("/{userId}/notifications")
+    fun notifications(
+        @PathVariable userId: UUID,
+        @AuthenticationPrincipal auth: AuthenticatedUser
+    ): ResponseEntity<List<UserNotificationResponse>> {
+        AccessGuard.requireOwner(auth, userId)
+        return ResponseEntity.ok(userService.notifications(userId))
     }
 
     /**
