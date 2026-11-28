@@ -45,7 +45,8 @@ class LoanRequestListControllerTest {
     @Autowired lateinit var loanRequestRepository: LoanRequestRepository
     @Value("\${jwt.secret}") lateinit var jwtSecret: String
 
-    private val base = Instant.parse("2026-11-01T10:00:00Z")
+    // Hace 2 días: dentro del rango por defecto (últimos 30 días)
+    private val base = Instant.now().minus(2, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS)
     private lateinit var supervisorToken: String
 
     @BeforeEach

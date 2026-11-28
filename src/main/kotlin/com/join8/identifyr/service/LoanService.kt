@@ -7,18 +7,26 @@ import com.join8.identifyr.exception.ResourceNotFoundException
 import com.join8.identifyr.model.dto.request.LoanRegisterRequest
 import com.join8.identifyr.model.dto.response.CurrentLoanResponse
 import com.join8.identifyr.model.dto.response.CurrentLoanType
-import com.join8.identifyr.model.dto.response.LoanInstallmentResponse
 import com.join8.identifyr.model.dto.response.LoanRegisterResponse
 import com.join8.identifyr.model.entity.*
 import com.join8.identifyr.repository.LoanInstallmentRepository
 import com.join8.identifyr.repository.LoanRepository
 import com.join8.identifyr.repository.LoanRequestRepository
+import com.join8.identifyr.service.credit.CreditEngine
+import com.join8.identifyr.service.credit.CreditParameterService
+import com.join8.identifyr.service.credit.CreditResponses
+import com.join8.identifyr.service.credit.CreditSimulation
+import com.join8.identifyr.service.credit.LoanSchedules
+import com.join8.identifyr.service.credit.Modality
 import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.math.BigDecimal
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 import java.util.*
 
@@ -28,18 +36,23 @@ class LoanService(
     private val loanInstallmentRepository: LoanInstallmentRepository,
     private val loanRequestRepository: LoanRequestRepository,
     private val props: LoanProperties,
-    private val clock: Clock
+    private val clock: Clock,
+    private val loanPaymentService: LoanPaymentService,
+    private val creditParameterService: CreditParameterService
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     companion object {
         const val MAX_OPERATION_CODE_LENGTH = 50
         private val PHONE_FORMAT = Regex("[0-9]{9}")
+        /** Espera para volver a solicitar después de cancelar un préstamo. */
+        val NEW_LOAN_WAIT: Duration = Duration.ofHours(48)
     }
 
     /**
-     * "Guardar operación": crea el préstamo y su cronograma y pasa la solicitud a PROCESADA, todo en una
-     * transacción (si algo falla no queda nada a medias). Del cliente solo se usan idSolicitud y codigoOperacion.
+     * "Guardar operación": crea el préstamo con el motor de crédito (CreditEngine, F01–F20) y la snapshot de los
+     * parámetros vigentes, guarda el cronograma (cuota 1 ACTIVA) y pasa la solicitud a PROCESADA, todo en una
+     * transacción. Del cliente solo se usan idSolicitud y codigoOperacion.
      *
      * 404 solicitud inexistente · 409 no PENDIENTE o código repetido · 422 datos de la solicitud inválidos.
      */
@@ -63,31 +76,34 @@ class LoanService(
         }
         if (loanRepository.existsByOperationCode(operationCode)) throw duplicatedOperationCode(operationCode)
 
-        val plan = LoanPlan.forFrequency(loanRequest.installmentFrequency)
+        val modality = Modality.forPeriod(loanRequest.installmentFrequency)
             ?: throw BusinessException(
                 "La solicitud tiene una frecuencia de cuota inválida (${loanRequest.installmentFrequency}); " +
-                    "se permite ${LoanPlan.allowedFrequencies.joinToString(" o ")} días"
+                    "se permite ${Modality.allowedPeriods.joinToString(" o ")} días"
             )
         if (loanRequest.requestedAmount <= 0) throw BusinessException("La solicitud tiene un monto inválido")
 
         // Prevalece la hora del servidor en que se registra la operación (nunca la del cliente ni la de la solicitud)
         val operationRegisteredAt = clock.instant().truncatedTo(ChronoUnit.SECONDS)
-        val disbursementDate = LoanScheduleCalculator.disbursementDate(operationRegisteredAt, props.zone)
-        val schedule = LoanScheduleCalculator.calculate(loanRequest.requestedAmount, plan, disbursementDate)
+        val disbursementDate = LocalDate.ofInstant(operationRegisteredAt, props.zone)
+        val params = creditParameterService.parametersAt(disbursementDate)
+        val sim = CreditEngine.simulate(
+            BigDecimal(loanRequest.requestedAmount), modality, disbursementDate, params, creditParameterService.holidays()
+        )
 
         val loan = try {
-            loanRepository.saveAndFlush(newLoan(loanRequest, operationCode, schedule, createdBy, operationRegisteredAt))
+            loanRepository.saveAndFlush(
+                newLoan(loanRequest, operationCode, sim, createdBy, operationRegisteredAt)
+                    .also { LoanSchedules.applySnapshot(it, sim, params) }
+            )
         } catch (e: DataIntegrityViolationException) {
             // Carrera con otro préstamo que usó el mismo código entre el exists y el insert
             throw duplicatedOperationCode(operationCode)
         }
 
-        val installments = loanInstallmentRepository.saveAllAndFlush(schedule.installments.map {
-            LoanInstallment(
-                loanId = loan.id!!, installmentNumber = it.number, dueDate = it.dueDate,
-                amount = it.amount, createdAt = operationRegisteredAt
-            )
-        })
+        val installments = loanInstallmentRepository.saveAllAndFlush(
+            LoanSchedules.newInstallments(loan.id!!, sim, operationRegisteredAt)
+        )
 
         loanRequest.status = LoanRequestStatus.PROCESADA
         loanRequest.operationCode = operationCode
@@ -95,7 +111,7 @@ class LoanService(
         loanRequest.updatedAt = operationRegisteredAt
         loanRequestRepository.saveAndFlush(loanRequest)
 
-        log.info("Préstamo {} registrado para la solicitud {} ({} x{})", loan.id, requestId, plan, plan.installmentCount)
+        log.info("Préstamo {} registrado para la solicitud {} ({} x{}, cuota {})", loan.id, requestId, modality, modality.installments, sim.installmentAmount)
 
         return LoanRegisterResponse(
             idPrestamo = loan.id!!,
@@ -104,21 +120,23 @@ class LoanService(
             fechaRegistroOperacion = operationRegisteredAt.atZone(props.zone).toOffsetDateTime(),
             fechaDesembolso = loan.disbursementDate,
             montoDesembolsado = loan.amount,
-            tasaInteres = LoanScheduleCalculator.basisPointsToPercent(plan.interestRateBp),
-            montoInteres = loan.interest,
-            montoTotal = loan.totalAmount,
-            frecuenciaCuota = loan.installmentFrequency,
-            numeroCuotas = loan.installmentCount,
-            plazoDias = loan.termDays,
-            cuotas = installments.sortedBy { it.installmentNumber }.map {
-                LoanInstallmentResponse(it.installmentNumber, it.dueDate, it.amount, it.status.name)
-            }
+            tasaInteres = CreditResponses.percent(sim.tea),
+            montoInteres = sim.interestTotal,
+            comisionTotal = sim.commissionTotal,
+            apisTotal = sim.apisTotal,
+            cuota = sim.installmentAmount,
+            montoTotal = sim.totalToPay,
+            tcea = CreditResponses.percent(sim.tcea),
+            frecuenciaCuota = modality.periodDays,
+            numeroCuotas = modality.installments,
+            plazoDias = sim.termDays,
+            cuotas = installments.sortedBy { it.installmentNumber }.map(CreditResponses::installment)
         )
     }
 
     /**
-     * Situación actual de un celular: préstamo VIGENTE (con la próxima cuota sin pagar) o, si no hay,
-     * solicitud PENDIENTE. Sin ninguno de los dos -> 404.
+     * Situación actual de un celular, en este orden: préstamo VIGENTE (cuota ACTIVA, cronograma y cuánto paga hoy),
+     * solicitud PENDIENTE, o según la última solicitud: RECHAZADA, o PROCESADA con su préstamo ya PAGADO. Si no -> 404.
      */
     @Transactional(readOnly = true)
     fun current(phone: String): CurrentLoanResponse {
@@ -126,8 +144,10 @@ class LoanService(
 
         loanRepository.findFirstByPhoneAndStatusOrderByCreatedAtDesc(phone, LoanStatus.VIGENTE)?.let { loan ->
             val installments = loanInstallmentRepository.findAllByLoanIdOrderByInstallmentNumberAsc(loan.id!!)
-            val next = installments.firstOrNull { it.status != InstallmentStatus.PAGADA }
-            if (next != null) {
+            val active = installments.firstOrNull { it.status == InstallmentStatus.ACTIVA }
+                ?: installments.firstOrNull { it.status != InstallmentStatus.PAGADA }
+            if (active != null) {
+                val today = LocalDate.ofInstant(clock.instant(), props.zone)
                 return CurrentLoanResponse(
                     tipo = CurrentLoanType.PRESTAMO_ACTIVO,
                     idSolicitud = loan.loanRequestId,
@@ -140,17 +160,26 @@ class LoanService(
                     montoDesembolsado = loan.amount,
                     montoTotal = loan.totalAmount,
                     saldoPendiente = loan.outstandingBalance,
-                    montoCuota = next.amount,
-                    numeroCuota = next.installmentNumber,
+                    montoCuota = active.amount,
+                    numeroCuota = active.installmentNumber,
                     totalCuotas = installments.size,
-                    fechaVencimiento = next.dueDate,
-                    estadoCuota = next.status.name
+                    fechaVencimiento = active.dueDate,
+                    estadoCuota = active.status.name,
+                    cuotas = installments.map(CreditResponses::installment),
+                    pagoPendiente = loanPaymentService.pendingFor(loan.id!!),
+                    cotizacionHoy = CreditResponses.paymentQuote(
+                        today,
+                        LoanSchedules.quoteActive(loan, installments, today)?.second,
+                        LoanSchedules.quotePayoff(loan, installments, today)?.second
+                    ),
+                    tea = loan.tea?.let(CreditResponses::percent),
+                    tcea = loan.tcea?.let(CreditResponses::percent)
                 )
             }
         }
 
         val pending = loanRequestRepository.findFirstByPhoneAndStatusOrderByCreatedAtDesc(phone, LoanRequestStatus.PENDIENTE)
-            ?: throw ResourceNotFoundException("No hay préstamo activo ni solicitud pendiente para el celular")
+            ?: return fromLastRequest(phone)
         return CurrentLoanResponse(
             tipo = CurrentLoanType.SOLICITUD,
             idSolicitud = pending.id!!,
@@ -161,29 +190,66 @@ class LoanService(
         )
     }
 
+    // Según la ÚLTIMA solicitud: rechazada, o procesada con su préstamo ya pagado (puede volver a solicitar tras 48 h)
+    private fun fromLastRequest(phone: String): CurrentLoanResponse {
+        val last = loanRequestRepository.findFirstByPhoneOrderByCreatedAtDesc(phone)
+        if (last?.status == LoanRequestStatus.RECHAZADA) {
+            return CurrentLoanResponse(
+                tipo = CurrentLoanType.SOLICITUD,
+                idSolicitud = last.id!!,
+                estado = last.status.name,
+                carteraDigital = last.depositType.name,
+                montoSolicitado = last.requestedAmount,
+                frecuenciaCuota = last.installmentFrequency,
+                motivoRechazo = last.rejectionReason
+            )
+        }
+        val paid = last?.takeIf { it.status == LoanRequestStatus.PROCESADA }
+            ?.let { loanRepository.findByLoanRequestId(it.id!!) }
+            ?.takeIf { it.status == LoanStatus.PAGADO }
+            ?: throw ResourceNotFoundException("No hay préstamo activo ni solicitud pendiente para el celular")
+        val closedAt = paid.closedAt ?: paid.updatedAt
+        return CurrentLoanResponse(
+            tipo = CurrentLoanType.PRESTAMO_PAGADO,
+            idSolicitud = paid.loanRequestId,
+            estado = paid.status.name,
+            carteraDigital = paid.depositType.name,
+            frecuenciaCuota = paid.installmentFrequency,
+            idPrestamo = paid.id!!,
+            codigoOperacion = paid.operationCode,
+            fechaDesembolso = paid.disbursementDate,
+            montoDesembolsado = paid.amount,
+            montoTotal = paid.totalAmount,
+            saldoPendiente = BigDecimal.ZERO.setScale(2),
+            totalCuotas = paid.installmentCount,
+            fechaCancelacion = closedAt,
+            nuevaSolicitudDesde = closedAt.plus(NEW_LOAN_WAIT)
+        )
+    }
+
     private fun newLoan(
-        loanRequest: LoanRequest, operationCode: String, schedule: LoanSchedule, createdBy: String?, now: Instant
+        loanRequest: LoanRequest, operationCode: String, sim: CreditSimulation, createdBy: String?, now: Instant
     ) = Loan(
         loanRequestId = loanRequest.id!!,
         userId = loanRequest.userId,
         phone = loanRequest.phone,
-        amount = schedule.principal,
-        interest = schedule.interest,
-        interestRate = LoanScheduleCalculator.basisPointsToFraction(schedule.plan.interestRateBp),
-        totalAmount = schedule.total,
-        installmentFrequency = schedule.plan.frequencyDays,
-        installmentCount = schedule.plan.installmentCount,
-        termDays = LoanPlan.TERM_DAYS,
+        amount = sim.amount,
+        interest = sim.interestTotal,
+        interestRate = sim.tea,
+        totalAmount = sim.totalToPay,
+        installmentFrequency = sim.modality.periodDays,
+        installmentCount = sim.modality.installments,
+        termDays = sim.termDays,
         operationCode = operationCode,
         score = loanRequest.score,
         category = loanRequest.category,
         depositType = loanRequest.depositType,
         operationRegisteredAt = now,
-        disbursementDate = schedule.disbursementDate,
+        disbursementDate = sim.disbursementDate,
         requestDate = loanRequest.createdAt,
-        paymentDate = schedule.finalDueDate,
-        appPaymentDate = schedule.finalDueDate,
-        outstandingBalance = schedule.total,
+        paymentDate = sim.finalDueDate,
+        appPaymentDate = sim.finalDueDate,
+        outstandingBalance = sim.totalToPay,
         createdBy = createdBy,
         createdAt = now
     )

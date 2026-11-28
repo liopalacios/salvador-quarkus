@@ -13,7 +13,7 @@ enum class LoanRequestStatus { PENDIENTE, PROCESADA, RECHAZADA }
 
 /**
  * Solicitud de préstamo. Los datos del solicitante son inmutables (updatable = false):
- * al procesarla o rechazarla solo cambian [status], [operationCode], [processedAt] y [updatedAt].
+ * al procesarla o rechazarla solo cambian [status], [operationCode], [processedAt], los campos de rechazo y [updatedAt].
  */
 @Entity
 @Table(name = "loan_request")
@@ -43,7 +43,7 @@ class LoanRequest(
     @Column(name = "requested_amount", nullable = false, updatable = false)
     val requestedAmount: Int,
 
-    /** Días entre cuotas (15 o 30, ver LoanPlan). Null en solicitudes anteriores a V7: no se pueden procesar. */
+    /** Días entre cuotas (15 o 30, ver Modality). Null en solicitudes anteriores a V7: no se pueden procesar. */
     @Column(name = "installment_frequency", updatable = false)
     val installmentFrequency: Int? = null,
 
@@ -56,6 +56,21 @@ class LoanRequest(
 
     @Column(name = "processed_at")
     var processedAt: Instant? = null,
+
+    /** Motivo opcional que escribe el supervisor al rechazar. */
+    @Column(name = "rejection_reason", length = 255)
+    var rejectionReason: String? = null,
+
+    @Column(name = "rejected_at")
+    var rejectedAt: Instant? = null,
+
+    /** "sub" del token del supervisor que rechazó. */
+    @Column(name = "rejected_by", length = 100)
+    var rejectedBy: String? = null,
+
+    /** El cliente abrió la notificación del rechazo: ya no cuenta en la campana. */
+    @Column(name = "rejection_seen_at")
+    var rejectionSeenAt: Instant? = null,
 
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: Instant = now(),

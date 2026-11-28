@@ -8,8 +8,8 @@ import java.time.Clock
 import java.time.ZoneId
 
 /**
- * Prefijo "loan" en application.yaml. Planes, tasas y plazo NO van aquí: están en
- * [com.join8.identifyr.service.LoanPlan] (deben coincidir exactamente con la app).
+ * Prefijo "loan" en application.yaml. Tasas, comisión, APIs y feriados NO van aquí: viven en las tablas
+ * credit_parameter y holiday (ver [com.join8.identifyr.service.credit.CreditParameterService]).
  */
 @ConfigurationProperties(prefix = "loan")
 data class LoanProperties(

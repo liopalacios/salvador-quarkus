@@ -8,6 +8,9 @@ import com.join8.identifyr.model.dto.response.DniPhotosResponse
 import com.join8.identifyr.model.dto.response.UserNotificationResponse
 import com.join8.identifyr.model.dto.response.UserRegisterResponse
 import com.join8.identifyr.model.entity.User
+import com.join8.identifyr.model.entity.LoanRequestStatus
+import com.join8.identifyr.model.entity.PaymentType
+import com.join8.identifyr.repository.LoanRequestRepository
 import com.join8.identifyr.repository.UserRepository
 import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
@@ -18,7 +21,9 @@ import java.util.*
 
 @Service
 class UserService(
-    private val userRepository: UserRepository
+    private val userRepository: UserRepository,
+    private val loanRequestRepository: LoanRequestRepository,
+    private val loanPaymentService: LoanPaymentService
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -93,7 +98,10 @@ class UserService(
 
     /**
      * Notificaciones pendientes del usuario, calculadas a partir de sus datos (no hay tabla de notificaciones).
-     * Hoy: fotos del DNI sin subir (la subida falló durante el registro). Usuario inexistente -> 404.
+     *  - DNI_PHOTOS_PENDING: fotos del DNI sin subir (la subida falló durante el registro). Se resuelve subiéndolas.
+     *  - LOAN_REQUEST_REJECTED: la última solicitud fue rechazada y el cliente aún no abrió el aviso.
+     *  - PAYMENT_REJECTED: un pago informado que el supervisor rechazó y el cliente aún no abrió.
+     * Usuario inexistente -> 404.
      */
     @Transactional(readOnly = true)
     fun notifications(userId: UUID): List<UserNotificationResponse> {
@@ -108,6 +116,58 @@ class UserService(
                     )
                 )
             }
+            loanRequestRepository.findFirstByUserIdOrderByCreatedAtDesc(userId)
+                ?.takeIf { it.status == LoanRequestStatus.RECHAZADA && it.rejectionSeenAt == null }
+                ?.let { rejected ->
+                    add(
+                        UserNotificationResponse(
+                            type = UserNotificationResponse.TYPE_LOAN_REQUEST_REJECTED,
+                            title = "Tu solicitud de préstamo fue rechazada",
+                            message = rejected.rejectionReason?.let { "Motivo: $it" }
+                                ?: "Revisamos tu solicitud y por ahora no podemos aprobarla.",
+                            referenceId = rejected.id.toString()
+                        )
+                    )
+                }
+            loanPaymentService.unseenRejected(userId).forEach { payment ->
+                val concept = if (payment.tipo == PaymentType.TOTAL.name) "pago total" else "pago de la cuota ${payment.numeroCuota ?: ""}".trim()
+                add(
+                    UserNotificationResponse(
+                        type = UserNotificationResponse.TYPE_PAYMENT_REJECTED,
+                        title = "Tu pago no fue aceptado",
+                        message = "No pudimos confirmar tu $concept de S/ ${payment.monto} (operación ${payment.codigoOperacion})." +
+                            (payment.motivoRechazo?.let { " Motivo: $it." } ?: "") +
+                            " Tu cuota sigue pendiente: vuelve a informar el pago.",
+                        referenceId = payment.idPago.toString()
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * El cliente abrió una notificación: deja de contar en la campana.
+     *  - LOAN_REQUEST_REJECTED: [referenceId] = idSolicitud rechazada del propio usuario (si no, 404). Idempotente.
+     *  - DNI_PHOTOS_PENDING u otro tipo -> 400 (las fotos pendientes solo se resuelven subiéndolas).
+     */
+    @Transactional
+    fun markNotificationRead(userId: UUID, type: String, referenceId: String?) {
+        require(type == UserNotificationResponse.TYPE_LOAN_REQUEST_REJECTED || type == UserNotificationResponse.TYPE_PAYMENT_REJECTED) {
+            "Esta notificación no se puede marcar como leída"
+        }
+        val referenceUuid = referenceId?.let { runCatching { UUID.fromString(it.trim()) }.getOrNull() }
+            ?: throw IllegalArgumentException("referenceId debe ser el id de la solicitud o del pago")
+        if (type == UserNotificationResponse.TYPE_PAYMENT_REJECTED) {
+            loanPaymentService.markRejectionSeen(userId, referenceUuid)
+            return
+        }
+        val requestId = referenceUuid
+        val request = loanRequestRepository.findById(requestId).orElse(null)
+            ?.takeIf { it.userId == userId && it.status == LoanRequestStatus.RECHAZADA }
+            ?: throw ResourceNotFoundException("La solicitud rechazada no existe")
+        if (request.rejectionSeenAt == null) {
+            request.rejectionSeenAt = java.time.Instant.now()
+            loanRequestRepository.save(request)
         }
     }
 

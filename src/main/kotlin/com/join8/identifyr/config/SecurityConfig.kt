@@ -128,6 +128,9 @@ class SecurityConfig {
                     // Solo supervisor
                     .requestMatchers(HttpMethod.GET, "/loan-requests", "/loan-requests/**").hasRole(ROLE_SUPERVISOR)
                     .requestMatchers(HttpMethod.POST, "/loans/register").hasRole(ROLE_SUPERVISOR)
+                    .requestMatchers(HttpMethod.POST, "/loan-requests/*/reject").hasRole(ROLE_SUPERVISOR)
+                    .requestMatchers(HttpMethod.GET, "/loan-payments", "/loan-payments/**").hasRole(ROLE_SUPERVISOR)
+                    .requestMatchers(HttpMethod.POST, "/loan-payments/**").hasRole(ROLE_SUPERVISOR)
                     // Todo lo demás (GET, POST, PUT, DELETE, ...): token válido; el dueño se valida en el controlador
                     .anyRequest().authenticated()
             }

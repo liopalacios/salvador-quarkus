@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.JsonNodeFactory
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.join8.identifyr.model.entity.*
+import com.join8.identifyr.service.credit.CreditEngine
+import com.join8.identifyr.service.credit.CreditParameters
+import com.join8.identifyr.service.credit.Modality
 import com.join8.identifyr.repository.LoanInstallmentRepository
 import com.join8.identifyr.repository.LoanRepository
 import com.join8.identifyr.repository.LoanRequestRepository
@@ -85,6 +88,12 @@ class LoanControllerTest {
 
     // --- helpers ---
 
+    // Mismos parámetros y feriados que test-credit-data.sql; desembolso el sábado 14/11/2026
+    private val params = CreditParameters(BigDecimal("1.1468"), BigDecimal("0.15"), BigDecimal("0.30"), BigDecimal("5"), 360)
+    private val holidays = setOf("2026-11-01", "2026-12-08", "2026-12-09", "2026-12-25", "2027-01-01").map(LocalDate::parse).toSet()
+    private fun expected(amount: Int, modality: Modality) =
+        CreditEngine.simulate(BigDecimal(amount), modality, LocalDate.parse("2026-11-14"), params, holidays)
+
     private fun token(roles: List<String>, subject: String = "supervisor-1"): String {
         val encoder = NimbusJwtEncoder(ImmutableSecret<SecurityContext>(SecretKeySpec(jwtSecret.toByteArray(), "HmacSHA256")))
         val now = Instant.now()
@@ -146,13 +155,14 @@ class LoanControllerTest {
     // --- 201 ---
 
     @Test
-    fun `caso 1 - 200 soles quincenal crea prestamo, 4 cuotas y procesa la solicitud`() {
+    fun `caso 1 - 200 soles quincenal crea prestamo con el motor, cuota 1 ACTIVA y procesa la solicitud`() {
         val res = register(body()).andExpect(status().isCreated).json()
+        val sim = expected(200, Modality.QUINCENAL)
 
         assertEquals(
             setOf("idPrestamo", "idSolicitud", "codigoOperacion", "fechaRegistroOperacion", "fechaDesembolso",
-                "montoDesembolsado", "tasaInteres", "montoInteres", "montoTotal", "frecuenciaCuota", "numeroCuotas",
-                "plazoDias", "cuotas"),
+                "montoDesembolsado", "tasaInteres", "montoInteres", "comisionTotal", "apisTotal", "cuota", "montoTotal",
+                "tcea", "frecuenciaCuota", "numeroCuotas", "plazoDias", "cuotas"),
             res.keys()
         )
         assertEquals(pending.id.toString(), res["idSolicitud"].asText())
@@ -160,25 +170,33 @@ class LoanControllerTest {
         assertEquals("2026-11-14T10:32:05-05:00", res["fechaRegistroOperacion"].asText())
         assertEquals("2026-11-14", res["fechaDesembolso"].asText())
         assertEquals(BigDecimal("200.00"), res["montoDesembolsado"].decimalValue())
-        assertEquals(BigDecimal("18.00"), res["tasaInteres"].decimalValue())
-        assertEquals(BigDecimal("36.00"), res["montoInteres"].decimalValue())
-        assertEquals(BigDecimal("236.00"), res["montoTotal"].decimalValue())
+        assertEquals(BigDecimal("114.68"), res["tasaInteres"].decimalValue())
+        assertEquals(BigDecimal("60.00"), res["comisionTotal"].decimalValue())
+        assertEquals(BigDecimal("5.00"), res["apisTotal"].decimalValue())
+        assertEquals(sim.installmentAmount, res["cuota"].decimalValue())
+        assertEquals(sim.interestTotal, res["montoInteres"].decimalValue())
+        assertEquals(sim.totalToPay, res["montoTotal"].decimalValue())
+        assertEquals(sim.installmentAmount.multiply(BigDecimal(4)), res["montoTotal"].decimalValue())
         assertEquals(15, res["frecuenciaCuota"].asInt())
         assertEquals(4, res["numeroCuotas"].asInt())
-        assertEquals(61, res["plazoDias"].asInt())
+        assertEquals(sim.termDays, res["plazoDias"].asInt())
+        // 29/11 cae domingo -> lunes 30; 13/01/2027 es miércoles
         assertEquals(
-            listOf(
-                Triple(1, "2026-11-29", "59.00"), Triple(2, "2026-12-14", "59.00"),
-                Triple(3, "2026-12-29", "59.00"), Triple(4, "2027-01-14", "59.00")
-            ),
-            res["cuotas"].map { Triple(it["numeroCuota"].asInt(), it["fechaVencimiento"].asText(), it["montoCuota"].decimalValue().toPlainString()) }
+            listOf("2026-11-30", "2026-12-14", "2026-12-29", "2027-01-13"),
+            res["cuotas"].map { it["fechaVencimiento"].asText() }
         )
-        res["cuotas"].forEach {
-            assertEquals(setOf("numeroCuota", "fechaVencimiento", "montoCuota", "estado"), it.keys())
-            assertEquals("PENDIENTE", it["estado"].asText())
+        assertEquals(listOf("ACTIVA", "PENDIENTE", "PENDIENTE", "PENDIENTE"), res["cuotas"].map { it["estado"].asText() })
+        res["cuotas"].forEachIndexed { i, cuota ->
+            val row = sim.schedule[i]
+            assertEquals(row.installment, cuota["montoCuota"].decimalValue())
+            assertEquals(row.interest, cuota["interes"].decimalValue())
+            assertEquals(row.principal, cuota["capital"].decimalValue())
+            assertEquals(row.commission, cuota["comision"].decimalValue())
+            assertEquals(row.apis, cuota["apis"].decimalValue())
+            assertEquals(row.closingBalance, cuota["saldoFinal"].decimalValue())
         }
 
-        // BD
+        // BD: snapshot de parámetros y desglose por cuota
         val loan = loanRepository.findById(UUID.fromString(res["idPrestamo"].asText())).get()
         assertEquals(pending.id, loan.loanRequestId)
         assertEquals(pending.userId, loan.userId)
@@ -186,21 +204,24 @@ class LoanControllerTest {
         assertEquals(DepositType.PLIN, loan.depositType)
         assertEquals(LoanCategory.ORO, loan.category)
         assertEquals(72, loan.score)
-        assertEquals(0, BigDecimal("0.18").compareTo(loan.interestRate))
-        assertEquals(0, BigDecimal("236").compareTo(loan.outstandingBalance))
+        assertEquals(Modality.QUINCENAL, loan.modality)
+        assertEquals(0, BigDecimal("1.1468").compareTo(loan.tea))
+        assertEquals(0, sim.totalToPay.compareTo(loan.outstandingBalance))
+        assertEquals(0, BigDecimal("0.30").compareTo(loan.commissionPct))
+        assertEquals(3, loan.engineVersion)
         assertEquals(LoanStatus.VIGENTE, loan.status)
         assertEquals(defaultNow, loan.operationRegisteredAt)
         assertEquals(LocalDate.parse("2026-11-14"), loan.disbursementDate)
         assertEquals(pending.createdAt, loan.requestDate)
-        assertEquals(LocalDate.parse("2027-01-14"), loan.paymentDate)
+        assertEquals(LocalDate.parse("2027-01-13"), loan.paymentDate)
         assertEquals("supervisor-1", loan.createdBy)
 
         val installments = installmentRepository.findAllByLoanIdOrderByInstallmentNumberAsc(loan.id!!)
         assertEquals(4, installments.size)
+        assertEquals(1, installments.count { it.status == InstallmentStatus.ACTIVA })
         installments.forEach {
             assertEquals(0, BigDecimal.ZERO.compareTo(it.paidAmount))
             assertNull(it.paidAt)
-            assertEquals(InstallmentStatus.PENDIENTE, it.status)
         }
 
         val processed = loanRequestRepository.findById(pending.id!!).get()
@@ -213,22 +234,25 @@ class LoanControllerTest {
     fun `caso 2 - 200 soles mensual`() {
         val monthly = loanRequest(frequency = 30)
         val res = register(body(idSolicitud = monthly.id)).andExpect(status().isCreated).json()
+        val sim = expected(200, Modality.MENSUAL)
 
-        assertEquals(BigDecimal("21.00"), res["tasaInteres"].decimalValue())
-        assertEquals(BigDecimal("42.00"), res["montoInteres"].decimalValue())
-        assertEquals(BigDecimal("242.00"), res["montoTotal"].decimalValue())
+        assertEquals(BigDecimal("114.68"), res["tasaInteres"].decimalValue())
+        assertEquals(sim.totalToPay, res["montoTotal"].decimalValue())
         assertEquals(2, res["numeroCuotas"].asInt())
-        assertEquals(listOf("2026-12-14", "2027-01-14"), res["cuotas"].map { it["fechaVencimiento"].asText() })
-        assertEquals(listOf("121.00", "121.00"), res["cuotas"].map { it["montoCuota"].decimalValue().toPlainString() })
+        assertEquals(listOf("2026-12-14", "2027-01-13"), res["cuotas"].map { it["fechaVencimiento"].asText() })
+        assertEquals(List(2) { sim.installmentAmount }, res["cuotas"].map { it["montoCuota"].decimalValue() })
     }
 
     @Test
-    fun `caso 3 - 51 soles, el sobrante va a la ultima cuota`() {
+    fun `caso 3 - 51 soles, cuotas iguales y la ultima cierra el saldo en cero`() {
         val small = loanRequest(amount = 51)
         val res = register(body(idSolicitud = small.id)).andExpect(status().isCreated).json()
+        val sim = expected(51, Modality.QUINCENAL)
 
-        assertEquals(BigDecimal("60.18"), res["montoTotal"].decimalValue())
-        assertEquals(listOf("15.04", "15.04", "15.04", "15.06"), res["cuotas"].map { it["montoCuota"].decimalValue().toPlainString() })
+        assertEquals(sim.totalToPay, res["montoTotal"].decimalValue())
+        assertEquals(1, res["cuotas"].map { it["montoCuota"].decimalValue() }.toSet().size)
+        assertEquals(BigDecimal("51.00"), res["cuotas"].fold(BigDecimal.ZERO) { a, c -> a.add(c["capital"].decimalValue()) })
+        assertEquals(BigDecimal("0.00"), res["cuotas"].last()["saldoFinal"].decimalValue())
     }
 
     @Test
@@ -237,7 +261,7 @@ class LoanControllerTest {
         val res = register(body(idSolicitud = old.id)).andExpect(status().isCreated).json()
 
         assertEquals("2026-11-14", res["fechaDesembolso"].asText())
-        assertEquals("2026-11-29", res["cuotas"][0]["fechaVencimiento"].asText())
+        assertEquals("2026-11-30", res["cuotas"][0]["fechaVencimiento"].asText())
         // La fecha de la solicitud solo queda como dato histórico
         assertEquals(Instant.parse("2026-11-01T15:00:00Z"), loanRepository.findByLoanRequestId(old.id!!)!!.requestDate)
     }
@@ -249,7 +273,7 @@ class LoanControllerTest {
 
         assertEquals("2026-11-14T23:30:00-05:00", res["fechaRegistroOperacion"].asText())
         assertEquals("2026-11-14", res["fechaDesembolso"].asText())
-        assertEquals("2027-01-14", res["cuotas"].last()["fechaVencimiento"].asText())
+        assertEquals("2027-01-13", res["cuotas"].last()["fechaVencimiento"].asText())
     }
 
     @Test
@@ -401,21 +425,41 @@ class LoanControllerTest {
         val loan = register(body()).andExpect(status().isCreated).json()
 
         val current = current("987654321").andExpect(status().isOk).json()
+        val sim = expected(200, Modality.QUINCENAL)
         assertEquals("PRESTAMO_ACTIVO", current["tipo"].asText())
         assertEquals(loan["idPrestamo"].asText(), current["idPrestamo"].asText())
-        assertEquals(BigDecimal("59.00"), current["montoCuota"].decimalValue())
+        assertEquals(sim.installmentAmount, current["montoCuota"].decimalValue())
         assertEquals(1, current["numeroCuota"].asInt())
+        assertEquals("ACTIVA", current["estadoCuota"].asText())
         assertEquals(4, current["totalCuotas"].asInt())
-        assertEquals("2026-11-29", current["fechaVencimiento"].asText())
-        assertEquals(BigDecimal("236.00"), current["saldoPendiente"].decimalValue())
+        assertEquals("2026-11-30", current["fechaVencimiento"].asText())
+        assertEquals(sim.totalToPay, current["saldoPendiente"].decimalValue())
+        assertEquals(BigDecimal("114.68"), current["tea"].decimalValue())
+        // Cronograma completo para el inicio del cliente
+        val cuotas = current["cuotas"]
+        assertEquals(listOf(1, 2, 3, 4), cuotas.map { it["numeroCuota"].asInt() })
+        assertEquals(listOf("ACTIVA", "PENDIENTE", "PENDIENTE", "PENDIENTE"), cuotas.map { it["estado"].asText() })
+        // Cotización de hoy (= día del desembolso): la cuota 1 anticipada no paga interés
+        val hoy = current["cotizacionHoy"]
+        assertEquals("2026-11-14", hoy["fechaPago"].asText())
+        assertEquals("ANTICIPADA", hoy["cuota"]["estadoPago"].asText())
+        assertEquals(BigDecimal("0.00"), hoy["cuota"]["interes"].decimalValue())
+        val row1 = sim.schedule[0]
+        assertEquals(row1.principal.add(row1.commission).add(row1.apis), hoy["cuota"]["montoAPagar"].decimalValue())
+        // Cancelar todo hoy: capital + comisión + APIs, sin intereses
+        assertEquals(BigDecimal("265.00"), hoy["total"]["monto"].decimalValue())
 
         // Pagada la 1ra cuota, la próxima es la 2da
-        val first = installmentRepository.findAllByLoanIdOrderByInstallmentNumberAsc(UUID.fromString(loan["idPrestamo"].asText()))[0]
-        first.status = InstallmentStatus.PAGADA
-        installmentRepository.save(first)
+        val all = installmentRepository.findAllByLoanIdOrderByInstallmentNumberAsc(UUID.fromString(loan["idPrestamo"].asText()))
+        all[0].status = InstallmentStatus.PAGADA
+        installmentRepository.saveAndFlush(all[0])
+        all[1].status = InstallmentStatus.ACTIVA
+        installmentRepository.saveAndFlush(all[1])
         current("987654321")
             .andExpect(jsonPath("$.numeroCuota").value(2))
             .andExpect(jsonPath("$.fechaVencimiento").value("2026-12-14"))
+            .andExpect(jsonPath("$.cuotas[0].estado").value("PAGADA"))
+            .andExpect(jsonPath("$.cuotas[1].estado").value("ACTIVA"))
     }
 
     @Test

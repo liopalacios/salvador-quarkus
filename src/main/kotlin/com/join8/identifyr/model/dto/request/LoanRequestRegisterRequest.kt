@@ -37,7 +37,7 @@ data class LoanRequestRegisterRequest(
     @field:Min(value = 1, message = "debe ser mayor que 0")
     val montoSolicitado: Int? = null,
 
-    // Días entre cuotas: 15 (QUINCENAL) o 30 (MENSUAL), ver LoanPlan. Opcional mientras la app no lo envíe,
+    // Días entre cuotas: 15 (QUINCENAL) o 30 (MENSUAL), ver Modality (CreditEngine). Opcional mientras la app no lo envíe,
     // pero sin él la solicitud no se puede desembolsar (POST /loans/register responde 422).
     val frecuenciaCuota: Int? = null
 )

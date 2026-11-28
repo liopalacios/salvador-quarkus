@@ -4,6 +4,7 @@ import jakarta.persistence.*
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
+import com.join8.identifyr.service.credit.Modality
 import java.util.*
 
 /** VIGENTE equivale al estado "ACTIVO" del préstamo. */
@@ -33,20 +34,20 @@ class Loan(
 
     @Column(name = "amount", nullable = false, updatable = false, precision = 12, scale = 2)
     val amount: BigDecimal,
-    @Column(name = "interest", nullable = false, updatable = false, precision = 12, scale = 2)
-    val interest: BigDecimal,
+    @Column(name = "interest", nullable = false, precision = 12, scale = 2)
+    var interest: BigDecimal,
     /** Fracción: 0.1800 = 18%. */
-    @Column(name = "interest_rate", nullable = false, updatable = false, precision = 5, scale = 4)
-    val interestRate: BigDecimal,
-    @Column(name = "total_amount", nullable = false, updatable = false, precision = 12, scale = 2)
-    val totalAmount: BigDecimal,
+    @Column(name = "interest_rate", nullable = false, precision = 5, scale = 4)
+    var interestRate: BigDecimal,
+    @Column(name = "total_amount", nullable = false, precision = 12, scale = 2)
+    var totalAmount: BigDecimal,
 
-    @Column(name = "installment_frequency", nullable = false, updatable = false)
-    val installmentFrequency: Int,
-    @Column(name = "installment_count", nullable = false, updatable = false)
-    val installmentCount: Int,
-    @Column(name = "term_days", nullable = false, updatable = false)
-    val termDays: Int,
+    @Column(name = "installment_frequency", nullable = false)
+    var installmentFrequency: Int,
+    @Column(name = "installment_count", nullable = false)
+    var installmentCount: Int,
+    @Column(name = "term_days", nullable = false)
+    var termDays: Int,
 
     @Column(name = "operation_code", length = 50, nullable = false, updatable = false, unique = true)
     val operationCode: String,
@@ -71,11 +72,11 @@ class Loan(
     val requestDate: Instant,
 
     /** Vencimiento de la última cuota. */
-    @Column(name = "payment_date", nullable = false, updatable = false)
-    val paymentDate: LocalDate,
+    @Column(name = "payment_date", nullable = false)
+    var paymentDate: LocalDate,
     /** Plazo que muestra la app (requisito de Google Play); hoy igual a [paymentDate]. */
-    @Column(name = "app_payment_date", nullable = false, updatable = false)
-    val appPaymentDate: LocalDate,
+    @Column(name = "app_payment_date", nullable = false)
+    var appPaymentDate: LocalDate,
 
     @Column(name = "outstanding_balance", nullable = false, precision = 12, scale = 2)
     var outstandingBalance: BigDecimal,
@@ -86,6 +87,37 @@ class Loan(
 
     @Column(name = "created_by", length = 100, updatable = false)
     val createdBy: String? = null,
+
+    // ---- Snapshot del motor de crédito (CreditEngine); null en préstamos aún no recalculados ----
+    @Enumerated(EnumType.STRING)
+    @Column(name = "modality", length = 10)
+    var modality: Modality? = null,
+    /** TEA del crédito (fracción: 1.1468 = 114.68%). */
+    @Column(name = "tea", precision = 10, scale = 6)
+    var tea: BigDecimal? = null,
+    @Column(name = "ted", precision = 30, scale = 25)
+    var ted: BigDecimal? = null,
+    @Column(name = "ted_mora", precision = 30, scale = 25)
+    var tedMora: BigDecimal? = null,
+    @Column(name = "commission_pct", precision = 6, scale = 4)
+    var commissionPct: BigDecimal? = null,
+    @Column(name = "apis_amount", precision = 12, scale = 2)
+    var apisAmount: BigDecimal? = null,
+    @Column(name = "commission_total", precision = 12, scale = 2)
+    var commissionTotal: BigDecimal? = null,
+    @Column(name = "apis_total", precision = 12, scale = 2)
+    var apisTotal: BigDecimal? = null,
+    /** Cuota fija (igual en todas). */
+    @Column(name = "installment_amount", precision = 12, scale = 2)
+    var installmentAmount: BigDecimal? = null,
+    /** TCEA (fracción: 27.6171… = 2,761.72%). */
+    @Column(name = "tcea", precision = 20, scale = 10)
+    var tcea: BigDecimal? = null,
+    @Column(name = "engine_version")
+    var engineVersion: Int? = null,
+    /** Momento en que se confirmó el último pago y el préstamo quedó PAGADO (regla de 48 h). */
+    @Column(name = "closed_at")
+    var closedAt: Instant? = null,
 
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: Instant,

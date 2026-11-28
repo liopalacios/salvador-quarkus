@@ -1,10 +1,13 @@
 package com.join8.identifyr.service
 
+import com.join8.identifyr.exception.BusinessException
 import com.join8.identifyr.exception.ResourceNotFoundException
 import com.join8.identifyr.model.dto.request.QuestionnaireRegisterRequest
 import com.join8.identifyr.model.dto.response.QuestionnaireRegisterResponse
 import com.join8.identifyr.model.dto.response.ScoreResponse
+import com.join8.identifyr.model.entity.LoanRequestStatus
 import com.join8.identifyr.model.entity.Questionnaire
+import com.join8.identifyr.repository.LoanRequestRepository
 import com.join8.identifyr.repository.QuestionnaireRepository
 import com.join8.identifyr.repository.UserRepository
 import org.springframework.stereotype.Service
@@ -15,7 +18,8 @@ import java.util.*
 class QuestionnaireService(
     private val questionnaireRepository: QuestionnaireRepository,
     private val userRepository: UserRepository,
-    private val scoreService: ScoreService
+    private val scoreService: ScoreService,
+    private val loanRequestRepository: LoanRequestRepository
 ) {
 
     companion object {
@@ -28,6 +32,7 @@ class QuestionnaireService(
      * Registra un envío del cuestionario. Nunca modifica respuestas: si hay un registro activo,
      * lo pasa a 'I' e inserta uno nuevo con los valores anteriores combinados con los del request.
      * Todo en una transacción; ante cualquier error se hace rollback.
+     * Usuario con una solicitud de préstamo RECHAZADA -> 422: ya no puede volver a llenar el cuestionario.
      */
     @Transactional
     fun register(request: QuestionnaireRegisterRequest): QuestionnaireRegisterResponse {
@@ -37,6 +42,9 @@ class QuestionnaireService(
         // Bloquea al usuario: dos envíos simultáneos no pueden crear dos registros activos
         userRepository.findByIdForUpdate(userId)
             ?: throw ResourceNotFoundException("El usuario $userId no existe")
+        if (loanRequestRepository.existsByUserIdAndStatus(userId, LoanRequestStatus.RECHAZADA)) {
+            throw BusinessException("Tu solicitud de préstamo fue rechazada: no puedes volver a llenar el cuestionario")
+        }
 
         val previous = questionnaireRepository.findByUserIdAndEstado(userId, Questionnaire.ACTIVE)
         if (previous == null) {

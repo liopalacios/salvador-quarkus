@@ -104,7 +104,7 @@ rate-limit:
     window-seconds: 60
 
 # === PRÉSTAMOS ===
-# Planes, tasas y plazo (61 días) están en LoanPlan.kt. Aquí solo la zona de la fecha de desembolso.
+# Tasas, comisión, APIs y feriados viven en las tablas credit_parameter y holiday (motor de crédito). Aquí solo la zona horaria.
 loan:
   zone: America/Lima
 

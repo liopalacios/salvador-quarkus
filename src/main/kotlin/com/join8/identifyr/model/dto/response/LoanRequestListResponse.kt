@@ -22,5 +22,7 @@ data class LoanRequestItemResponse(
     @field:JsonInclude(JsonInclude.Include.ALWAYS)
     val codigoOperacion: String?,
     /** YAPE | PLIN */
-    val carteraDigital: String
+    val carteraDigital: String,
+    /** Solo en RECHAZADA y si el supervisor lo escribió; si no, se omite. */
+    val motivoRechazo: String? = null
 )

@@ -7,9 +7,13 @@ package com.join8.identifyr.model.dto.response
 data class UserNotificationResponse(
     val type: String,
     val title: String,
-    val message: String
+    val message: String,
+    /** Recurso al que se refiere (p. ej. idSolicitud en LOAN_REQUEST_REJECTED); se usa para marcarla como leída. */
+    val referenceId: String? = null
 ) {
     companion object {
         const val TYPE_DNI_PHOTOS_PENDING = "DNI_PHOTOS_PENDING"
+        const val TYPE_LOAN_REQUEST_REJECTED = "LOAN_REQUEST_REJECTED"
+        const val TYPE_PAYMENT_REJECTED = "PAYMENT_REJECTED"
     }
 }

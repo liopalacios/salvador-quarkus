@@ -7,6 +7,7 @@ spring:
     password:
     driver-class-name: org.h2.Driver
   jpa:
+    defer-datasource-initialization: true
     hibernate:
       ddl-auto: create-drop
     properties:
@@ -14,6 +15,11 @@ spring:
         dialect: org.hibernate.dialect.H2Dialect
   flyway:
     enabled: false
+  # Parámetros y feriados del motor de crédito: se cargan después de que Hibernate crea el esquema
+  sql:
+    init:
+      mode: always
+      data-locations: classpath:test-credit-data.sql
 
 logging:
   level:

@@ -1,6 +1,7 @@
 package com.join8.identifyr.controller
 
 import com.join8.identifyr.model.dto.request.DniPhotosRequest
+import com.join8.identifyr.model.dto.request.NotificationReadRequest
 import com.join8.identifyr.model.dto.request.UserRegisterRequest
 import com.join8.identifyr.model.dto.response.DniPhotosResponse
 import com.join8.identifyr.model.dto.response.PhoneExistsResponse
@@ -72,6 +73,18 @@ class UserController(
     ): ResponseEntity<List<UserNotificationResponse>> {
         AccessGuard.requireOwner(auth, userId)
         return ResponseEntity.ok(userService.notifications(userId))
+    }
+
+    // Protegido: solo el propio usuario. Body {type, referenceId}. 204 · 400 tipo no marcable · 403 · 404
+    @PostMapping("/{userId}/notifications/read")
+    fun markNotificationRead(
+        @PathVariable userId: UUID,
+        @Valid @RequestBody request: NotificationReadRequest,
+        @AuthenticationPrincipal auth: AuthenticatedUser
+    ): ResponseEntity<Void> {
+        AccessGuard.requireOwner(auth, userId)
+        userService.markNotificationRead(userId, request.type!!.trim(), request.referenceId)
+        return ResponseEntity.noContent().build()
     }
 
     /**
